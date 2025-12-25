@@ -80,6 +80,7 @@ export interface LayoutStrategy {
   };
   // Logic Gate Flags
   isExplicitIntent?: boolean;
+  clearance?: boolean;
 }
 
 export interface TransformedLayer extends SerializableLayer {

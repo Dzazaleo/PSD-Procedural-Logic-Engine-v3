@@ -480,6 +480,37 @@ export const RemapperNode = memo(({ id, data }: NodeProps<PSDNodeData>) => {
     });
   }, [instances, id, registerPayload]);
 
+  // GHOST FLUSHING: Auto-cleanup when strategy reverts to GEOMETRIC
+  useEffect(() => {
+    let stateChanged = false;
+    const nextPreviews = { ...previews };
+    const nextConfirmations = { ...confirmations };
+
+    instances.forEach(instance => {
+        const strategyMethod = instance.source.aiStrategy?.method;
+        const idx = instance.index;
+
+        // Logic: If the Analyst explicitly switches to GEOMETRIC, 
+        // we must purge any lingering generative artifacts (ghosts/confirmations)
+        // to prevent the UI from showing stale states or expanding unnecessarily.
+        if (strategyMethod === 'GEOMETRIC') {
+            if (nextPreviews[idx]) {
+                delete nextPreviews[idx];
+                stateChanged = true;
+            }
+            if (nextConfirmations[idx]) {
+                delete nextConfirmations[idx];
+                stateChanged = true;
+            }
+        }
+    });
+
+    if (stateChanged) {
+        setPreviews(nextPreviews);
+        setConfirmations(nextConfirmations);
+    }
+  }, [instances, previews, confirmations]);
+
   // LAZY SYNTHESIS: Generate Drafts when AWAITING_CONFIRMATION
   useEffect(() => {
     instances.forEach(instance => {

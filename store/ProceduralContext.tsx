@@ -70,17 +70,36 @@ export const ProceduralStoreProvider: React.FC<{ children: React.ReactNode }> = 
   }, []);
 
   const registerResolved = useCallback((nodeId: string, handleId: string, context: MappingContext) => {
+    // SANITATION LOGIC (Ghost Flushing)
+    // If the Analyst explicitly switches to GEOMETRIC, we must strip any generative artifacts (previewUrl, prompt)
+    // before they are committed to the source of truth. This prevents downstream nodes (Remapper, Export) 
+    // from seeing stale ghosts or attempting to generate invalid content.
+    let sanitizedContext = context;
+
+    if (context.aiStrategy?.method === 'GEOMETRIC') {
+        sanitizedContext = {
+            ...context,
+            // Flush Ghost Preview
+            previewUrl: undefined,
+            // Flush Generative Intent
+            aiStrategy: {
+                ...context.aiStrategy,
+                generativePrompt: ''
+            }
+        };
+    }
+
     setResolvedRegistry(prev => {
       const nodeRecord = prev[nodeId] || {};
       const currentContext = nodeRecord[handleId];
-      if (currentContext === context) return prev;
-      if (currentContext && JSON.stringify(currentContext) === JSON.stringify(context)) return prev;
+      if (currentContext === sanitizedContext) return prev;
+      if (currentContext && JSON.stringify(currentContext) === JSON.stringify(sanitizedContext)) return prev;
       
       return {
         ...prev,
         [nodeId]: {
           ...nodeRecord,
-          [handleId]: context
+          [handleId]: sanitizedContext
         }
       };
     });

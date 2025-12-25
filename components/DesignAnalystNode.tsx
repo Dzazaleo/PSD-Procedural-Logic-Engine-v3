@@ -62,6 +62,11 @@ const StrategyCard: React.FC<{ strategy: LayoutStrategy, modelConfig: ModelConfi
                 <span className={`text-[9px] px-1.5 py-0.5 rounded border font-mono font-bold tracking-wider ${methodColor}`}>
                     {strategy.method || 'GEOMETRIC'}
                 </span>
+                {strategy.clearance && (
+                    <span className="text-[9px] px-1.5 py-0.5 rounded border border-orange-500 text-orange-300 bg-orange-900/20 font-mono font-bold">
+                        CLEARANCE
+                    </span>
+                )}
              </div>
              
              <div className="grid grid-cols-2 gap-4 mt-1">
@@ -662,6 +667,13 @@ export const DesignAnalystNode = memo(({ id, data }: NodeProps<PSDNodeData>) => 
         - If balance is 0, DO NOT suggest GENERATIVE methods. Pivot strictly to GEOMETRIC scaling or STRETCH anchors, even if aspect ratio mismatches are severe.
         - If you perform this forced pivot, you MUST mention "Geometric Pivot due to zero balance" in your 'reasoning' field.
         
+        PIVOT PROTOCOL (Geometric Reset):
+        If the user requests to "undo generation", "reset", "use original pixels", "stop generating", or if the strategy is GEOMETRIC:
+        1. Set 'method' to 'GEOMETRIC'.
+        2. Set 'generativePrompt' to "" (empty string).
+        3. Set 'clearance' to true.
+        4. Reset 'suggestedScale' to optimal geometric fit.
+
         FALLBACK PROTOCOL:
         If standard scaling fails (leaves gaps > 10% or cuts content) AND you provide a 'generativePrompt':
         1. Set 'method' to 'HYBRID' or 'GENERATIVE'.
@@ -708,6 +720,7 @@ export const DesignAnalystNode = memo(({ id, data }: NodeProps<PSDNodeData>) => 
                     anchor: { type: Type.STRING, enum: ['TOP', 'CENTER', 'BOTTOM', 'STRETCH'] },
                     generativePrompt: { type: Type.STRING },
                     reasoning: { type: Type.STRING },
+                    clearance: { type: Type.BOOLEAN, description: "Set to true when resetting from Generative back to Geometric" },
                     overrides: {
                         type: Type.ARRAY,
                         items: {
@@ -730,7 +743,7 @@ export const DesignAnalystNode = memo(({ id, data }: NodeProps<PSDNodeData>) => 
                         required: ['allowedBleed', 'violationCount']
                     }
                 },
-                required: ['method', 'suggestedScale', 'anchor', 'generativePrompt', 'reasoning', 'overrides', 'safetyReport']
+                required: ['method', 'suggestedScale', 'anchor', 'generativePrompt', 'reasoning', 'clearance', 'overrides', 'safetyReport']
             }
         };
         
