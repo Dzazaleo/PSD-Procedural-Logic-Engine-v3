@@ -270,6 +270,9 @@ export const DesignAnalystNode = memo(({ id, data }: NodeProps<PSDNodeData>) => 
   const [analyzingInstances, setAnalyzingInstances] = useState<Record<number, boolean>>({});
   const instanceCount = data.instanceCount || 1;
   const analystInstances = data.analystInstances || {};
+  
+  // Ref for debouncing draft generation
+  const draftTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   const edges = useEdges();
   const nodes = useNodes(); // Use nodes to find Source PSD
@@ -458,16 +461,35 @@ export const DesignAnalystNode = memo(({ id, data }: NodeProps<PSDNodeData>) => 
   };
 
   // --- AI Logic ---
-  const generateDraft = async (prompt: string): Promise<string | null> => {
+  const generateDraft = async (prompt: string, sourceReference?: string): Promise<string | null> => {
      try {
          const apiKey = process.env.API_KEY;
          if (!apiKey) return null;
          const ai = new GoogleGenAI({ apiKey });
+         
+         const parts: any[] = [];
+         
+         // Inpaint/Outpaint: Attach source reference if available for style consistency
+         if (sourceReference) {
+             const base64Data = sourceReference.includes('base64,') 
+                ? sourceReference.split('base64,')[1] 
+                : sourceReference;
+             parts.push({
+                 inlineData: {
+                     mimeType: 'image/png',
+                     data: base64Data
+                 }
+             });
+         }
+         
+         parts.push({ text: `Generate a draft sketch (256x256) for: ${prompt}` });
+
          const response = await ai.models.generateContent({
              model: 'gemini-2.5-flash-image',
-             contents: { parts: [{ text: `Generate a quick low-resolution draft sketch (256x256) for: ${prompt}` }] },
+             contents: { parts },
              config: { imageConfig: { aspectRatio: "1:1" } }
          });
+         
          for (const part of response.candidates?.[0]?.content?.parts || []) {
             if (part.inlineData) { return `data:image/png;base64,${part.inlineData.data}`; }
          }
@@ -658,14 +680,23 @@ export const DesignAnalystNode = memo(({ id, data }: NodeProps<PSDNodeData>) => 
                 ...json,
                 isExplicitIntent
             },
-            previewUrl: undefined,
+            previewUrl: undefined, // Clear stale preview immediately
             targetDimensions: targetData ? { w: targetData.bounds.w, h: targetData.bounds.h } : undefined
         };
         
+        // 1. Force update the registry without the preview first (Clear state)
         registerResolved(id, `source-out-${index}`, augmentedContext);
 
-        if (json.method === 'GENERATIVE' && json.generativePrompt) {
-             generateDraft(json.generativePrompt).then((url) => {
+        // 2. Conditional Draft Generation (Debounced)
+        if ((json.method === 'GENERATIVE' || json.method === 'HYBRID') && json.generativePrompt) {
+             
+             // Clear existing timeout to prevent rapid-fire API calls
+             if (draftTimeoutRef.current) clearTimeout(draftTimeoutRef.current);
+
+             draftTimeoutRef.current = setTimeout(async () => {
+                 // Pass source reference for better style matching
+                 const url = await generateDraft(json.generativePrompt, json.sourceReference);
+                 
                  if (url) {
                      console.log("PREVIEW_GENERATED: 0 Credits Consumed");
                      const contextWithPreview: MappingContext = {
@@ -673,9 +704,10 @@ export const DesignAnalystNode = memo(({ id, data }: NodeProps<PSDNodeData>) => 
                          previewUrl: url,
                          message: "Free Preview: Draft"
                      };
+                     // 3. Update registry with the new preview URL
                      registerResolved(id, `source-out-${index}`, contextWithPreview);
                  }
-             });
+             }, 500); // 500ms debounce
         }
 
       } catch (e: any) {

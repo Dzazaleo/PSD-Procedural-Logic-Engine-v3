@@ -1,4 +1,4 @@
-import React, { memo, useMemo, useEffect, useCallback, useState } from 'react';
+import React, { memo, useMemo, useEffect, useCallback, useState, useRef } from 'react';
 import { Handle, Position, NodeProps, useEdges, useReactFlow, useNodes } from 'reactflow';
 import { PSDNodeData, SerializableLayer, TransformedPayload, TransformedLayer, MAX_BOUNDARY_VIOLATION_PERCENT, LayoutStrategy } from '../types';
 import { useProceduralStore } from '../store/ProceduralContext';
@@ -37,6 +37,8 @@ interface OverlayProps {
     isConfirmed: boolean;
     targetDimensions?: { w: number, h: number };
     sourceReference?: string;
+    onImageLoad?: () => void; // Added for Optimistic UI Locking
+    refinementPending?: boolean;
 }
 
 const GenerativePreviewOverlay = ({ 
@@ -48,7 +50,9 @@ const GenerativePreviewOverlay = ({
     canConfirm,
     isConfirmed,
     targetDimensions,
-    sourceReference
+    sourceReference,
+    onImageLoad,
+    refinementPending
 }: OverlayProps) => {
     // Dynamic Ratio Calculation
     const { w, h } = targetDimensions || { w: 1, h: 1 };
@@ -92,6 +96,7 @@ const GenerativePreviewOverlay = ({
                  {previewUrl ? (
                      <img 
                         src={previewUrl} 
+                        onLoad={onImageLoad}
                         alt="AI Ghost" 
                         className={`w-full h-full object-cover transition-all duration-700 
                             ${isConfirmed 
@@ -122,7 +127,9 @@ const GenerativePreviewOverlay = ({
                                 onClick={(e) => { e.stopPropagation(); onConfirm(); }}
                                 className="bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white py-2 px-4 rounded shadow-[0_0_15px_rgba(168,85,247,0.5)] border border-white/20 transform hover:scale-105 transition-all flex flex-col items-center"
                              >
-                                <span className="text-[10px] font-bold uppercase tracking-wider">Confirm Generation</span>
+                                <span className="text-[10px] font-bold uppercase tracking-wider">
+                                    {refinementPending ? 'Update Generation' : 'Confirm Generation'}
+                                </span>
                                 <span className="text-[8px] opacity-90 font-mono mt-0.5">1 Credit Cost</span>
                              </button>
                          ) : (
@@ -169,11 +176,20 @@ const GenerativePreviewOverlay = ({
 export const RemapperNode = memo(({ id, data }: NodeProps<PSDNodeData>) => {
   // Read instance count from persistent data, default to 1 if new/undefined
   const instanceCount = data.instanceCount || 1;
-  const [confirmations, setConfirmations] = useState<Record<number, boolean>>({});
+  // SOFT LOCK STATE: Stores the PROMPT STRING that was confirmed, not just a boolean
+  // This allows us to auto-reset confirmation if the prompt changes (Refinement)
+  const [confirmations, setConfirmations] = useState<Record<number, string>>({});
   
   // Local state for generated draft previews
   const [previews, setPreviews] = useState<Record<number, string>>({});
   const [isGeneratingPreview, setIsGeneratingPreview] = useState<Record<number, boolean>>({});
+  
+  // Track previous prompts to detect changes (In-Flight Logic)
+  const lastPromptsRef = useRef<Record<number, string>>({});
+
+  // OPTIMISTIC UI STATE: Prevents flicker by locking updates until images load
+  const [displayPreviews, setDisplayPreviews] = useState<Record<number, string>>({});
+  const isTransitioningRef = useRef<Record<number, boolean>>({});
 
   const { setNodes } = useReactFlow();
   const edges = useEdges();
@@ -188,9 +204,14 @@ export const RemapperNode = memo(({ id, data }: NodeProps<PSDNodeData>) => {
   }, [id, unregisterNode]);
 
   // Handle Confirmation Toggle
-  const handleConfirmGeneration = (index: number) => {
-      setConfirmations(prev => ({ ...prev, [index]: true }));
+  const handleConfirmGeneration = (index: number, prompt: string) => {
+      setConfirmations(prev => ({ ...prev, [index]: prompt }));
   };
+
+  const handleImageLoad = useCallback((index: number) => {
+      // Release the optimistic lock once the browser has confirmed the image is ready to render
+      isTransitioningRef.current[index] = false;
+  }, []);
 
   // Compute Data for ALL Instances
   const instances: InstanceData[] = useMemo(() => {
@@ -404,11 +425,15 @@ export const RemapperNode = memo(({ id, data }: NodeProps<PSDNodeData>) => {
             let requiresGeneration = false;
             let status: TransformedPayload['status'] = 'success';
             let generativePromptUsed = null;
-            const isConfirmed = confirmations[i];
+            
+            // SOFT LOCK LOGIC: Confirmation is valid only if prompts match
+            const currentPrompt = sourceData.aiStrategy?.generativePrompt;
+            const confirmedPrompt = confirmations[i];
+            const isConfirmed = !!currentPrompt && currentPrompt === confirmedPrompt;
 
-            if (sourceData.aiStrategy?.generativePrompt) {
+            if (currentPrompt) {
                 const scaleThreshold = 2.0; // 200% stretch safety limit
-                const isExplicit = sourceData.aiStrategy.isExplicitIntent;
+                const isExplicit = sourceData.aiStrategy!.isExplicitIntent;
                 const isHighStretch = scale > scaleThreshold;
                 const hasCredits = userCredits > 0;
                 
@@ -418,7 +443,7 @@ export const RemapperNode = memo(({ id, data }: NodeProps<PSDNodeData>) => {
                 // Case 1: Confirmed via UI
                 if (isConfirmed && hasCredits) {
                     requiresGeneration = true;
-                    generativePromptUsed = sourceData.aiStrategy.generativePrompt;
+                    generativePromptUsed = currentPrompt;
                     status = 'success';
                 }
                 // Case 2: Needs Confirmation (Explicit Intent OR High Stretch)
@@ -530,25 +555,81 @@ export const RemapperNode = memo(({ id, data }: NodeProps<PSDNodeData>) => {
     }
   }, [instances, previews, confirmations]);
 
-  // LAZY SYNTHESIS: Generate Drafts when AWAITING_CONFIRMATION
+  // OPTIMISTIC LOCK SYNCHRONIZATION: Prevent Revert/Flicker
   useEffect(() => {
     instances.forEach(instance => {
-        const needsPreview = instance.payload?.status === 'awaiting_confirmation' && 
-                             instance.payload.requiresGeneration === false; 
-        
-        const hasPrompt = !!instance.source.aiStrategy?.generativePrompt;
-        const isAwaiting = instance.payload?.status === 'awaiting_confirmation';
-        
-        // Skip if preview already exists (either from upstream or local)
-        const existingPreview = instance.payload?.previewUrl;
+        const idx = instance.index;
+        // Determine the "Incoming" Truth (Upstream or Local)
+        const incomingUrl = instance.payload?.previewUrl || previews[idx];
+        const currentUrl = displayPreviews[idx];
+        const isLocked = isTransitioningRef.current[idx];
 
-        // Only generate if we haven't already and aren't currently generating AND no upstream preview
-        if (isAwaiting && hasPrompt && !existingPreview && !isGeneratingPreview[instance.index]) {
-             const prompt = instance.source.aiStrategy!.generativePrompt;
+        if (incomingUrl) {
+             if (incomingUrl !== currentUrl) {
+                 // Case: New URL arrived
+                 if (isLocked) {
+                     // We are transitioning (loading) a previous update. 
+                     // Ignore this update (assume it's a stale flicker or race condition).
+                     return;
+                 }
+
+                 // Start Transition
+                 isTransitioningRef.current[idx] = true;
+                 setDisplayPreviews(prev => ({ ...prev, [idx]: incomingUrl }));
+
+                 // Failsafe: Release lock after 800ms if onLoad never fires
+                 setTimeout(() => {
+                     if (isTransitioningRef.current[idx]) {
+                         isTransitioningRef.current[idx] = false;
+                     }
+                 }, 800);
+             }
+        } else if (currentUrl) {
+            // Case: URL cleared upstream. Clear immediately (no lock needed for removal)
+            setDisplayPreviews(prev => {
+                const next = { ...prev };
+                delete next[idx];
+                return next;
+            });
+            isTransitioningRef.current[idx] = false;
+        }
+    });
+  }, [instances, previews, displayPreviews]);
+
+  // LAZY SYNTHESIS & PROMPT MONITORING: Generate Drafts when AWAITING_CONFIRMATION or PROMPT CHANGED
+  useEffect(() => {
+    instances.forEach(instance => {
+        const idx = instance.index;
+        const strategy = instance.source.aiStrategy;
+        const currentPrompt = strategy?.generativePrompt;
+        
+        // 1. Detect Prompt Change (In-Flight Logic)
+        const lastPrompt = lastPromptsRef.current[idx];
+        const hasPrompt = !!currentPrompt;
+        const promptChanged = hasPrompt && currentPrompt !== lastPrompt;
+        
+        // 2. Detect Missing Preview (Initial Load Logic)
+        // We check if we have ANY preview (upstream or local)
+        const isAwaiting = instance.payload?.status === 'awaiting_confirmation';
+        const hasPreview = !!(instance.payload?.previewUrl || previews[idx]);
+        const needsInitialPreview = isAwaiting && hasPrompt && !hasPreview;
+
+        // Condition to trigger generation:
+        // A. Prompt changed (Refresh)
+        // B. No preview exists yet (Lazy Load)
+        if (promptChanged || needsInitialPreview) {
+             // Avoid double-triggering if already working on THIS prompt
+             // But if prompt changed, we MUST trigger even if currently generating (cancel/overwrite conceptually)
+             if (isGeneratingPreview[idx] && !promptChanged) return;
+
+             // Update Ref if changed to prevent loops
+             if (currentPrompt) lastPromptsRef.current[idx] = currentPrompt;
+
+             const prompt = currentPrompt!;
              const sourceRef = instance.source.aiStrategy?.sourceReference;
              
              const generateDraft = async () => {
-                 setIsGeneratingPreview(prev => ({...prev, [instance.index]: true}));
+                 setIsGeneratingPreview(prev => ({...prev, [idx]: true}));
                  
                  try {
                      const apiKey = process.env.API_KEY;
@@ -595,13 +676,13 @@ export const RemapperNode = memo(({ id, data }: NodeProps<PSDNodeData>) => {
                      
                      if (base64Data) {
                          const url = `data:image/png;base64,${base64Data}`;
-                         setPreviews(prev => ({...prev, [instance.index]: url}));
+                         setPreviews(prev => ({...prev, [idx]: url}));
                      }
 
                  } catch (e) {
                      console.error("Draft Generation Failed", e);
                  } finally {
-                     setIsGeneratingPreview(prev => ({...prev, [instance.index]: false}));
+                     setIsGeneratingPreview(prev => ({...prev, [idx]: false}));
                  }
              };
              
@@ -654,8 +735,16 @@ export const RemapperNode = memo(({ id, data }: NodeProps<PSDNodeData>) => {
              // Determine if overlay should be shown
              const hasPreview = !!instance.payload?.previewUrl;
              const isAwaiting = instance.payload?.status === 'awaiting_confirmation';
-             const isConfirmed = !!confirmations[instance.index];
-             const showOverlay = hasPreview || isAwaiting;
+             
+             // Soft Lock Logic for UI
+             const currentPrompt = instance.source.aiStrategy?.generativePrompt;
+             const confirmedPrompt = confirmations[instance.index];
+             const isConfirmed = !!currentPrompt && currentPrompt === confirmedPrompt;
+             const refinementPending = !!confirmedPrompt && !!currentPrompt && confirmedPrompt !== currentPrompt;
+             
+             // Show overlay if we have a preview, OR if we are waiting for confirmation, 
+             // OR if we were confirmed but a refinement is now pending (effectively awaiting re-confirmation)
+             const showOverlay = hasPreview || isAwaiting || refinementPending;
 
              return (
              <div key={instance.index} className="relative p-3 border-b border-slate-700/50 bg-slate-800 space-y-3 hover:bg-slate-700/20 transition-colors first:rounded-t-none">
@@ -752,19 +841,27 @@ export const RemapperNode = memo(({ id, data }: NodeProps<PSDNodeData>) => {
                                             ⚠️ High procedural distortion.
                                         </span>
                                    )}
+                                   {refinementPending && (
+                                       <div className="flex items-center space-x-1.5 p-1.5 bg-indigo-900/40 border border-indigo-500/30 rounded mb-1 animate-pulse">
+                                           <svg className="w-3 h-3 text-indigo-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
+                                           <span className="text-[9px] text-indigo-200 font-medium leading-none">Refinement detected. Re-confirm to apply.</span>
+                                       </div>
+                                   )}
                                    
                                    {/* Generative Preview Sandbox */}
                                    <GenerativePreviewOverlay 
-                                       previewUrl={instance.payload.previewUrl || previews[instance.index]}
+                                       previewUrl={displayPreviews[instance.index] || instance.payload.previewUrl || previews[instance.index]}
                                        isGenerating={!!isGeneratingPreview[instance.index]}
                                        scale={instance.payload.scaleFactor}
-                                       onConfirm={() => handleConfirmGeneration(instance.index)}
+                                       onConfirm={() => handleConfirmGeneration(instance.index, instance.source.aiStrategy?.generativePrompt || '')}
                                        userCredits={userCredits}
-                                       canConfirm={isAwaiting}
+                                       canConfirm={isAwaiting || refinementPending}
                                        isConfirmed={isConfirmed}
                                        // PRIORITIZE SOURCE-PROVIDED DIMENSIONS
                                        targetDimensions={instance.source.targetDimensions || instance.target.bounds}
                                        sourceReference={instance.payload.sourceReference}
+                                       onImageLoad={() => handleImageLoad(instance.index)}
+                                       refinementPending={refinementPending}
                                    />
                                </div>
                            )}

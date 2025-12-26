@@ -111,6 +111,35 @@ export const ProceduralStoreProvider: React.FC<{ children: React.ReactNode }> = 
       const currentPayload = nodeRecord[handleId];
 
       if (currentPayload === payload) return prev;
+
+      // CHECK FOR NON-BILLABLE DRAFT REFRESH
+      // If the payload exists and the only significant change is the previewUrl,
+      // we identify this as a visual refinement ("Ghost") update.
+      if (currentPayload) {
+          const isPreviewChanged = currentPayload.previewUrl !== payload.previewUrl;
+          
+          // Logic: Structural properties (status, requirements) should remain stable during a draft refresh.
+          const isStructureStable = 
+              currentPayload.status === payload.status &&
+              currentPayload.requiresGeneration === payload.requiresGeneration;
+
+          if (isPreviewChanged && isStructureStable) {
+               // EMIT EVENT: Notify listeners (RemapperNode UI) of a non-billable visual update.
+               // This allows the UI to trigger animations or feedback without re-mounting entirely.
+               const event = new CustomEvent('payload-updated', { 
+                   detail: { 
+                       nodeId, 
+                       handleId, 
+                       type: 'DRAFT_REFRESH',
+                       isBillable: false,
+                       newPreviewUrl: payload.previewUrl
+                   } 
+               });
+               // Dispatch on next tick to avoid synchronous side-effects inside state setter
+               setTimeout(() => window.dispatchEvent(event), 0);
+          }
+      }
+
       if (currentPayload && JSON.stringify(currentPayload) === JSON.stringify(payload)) return prev;
 
       return { 
