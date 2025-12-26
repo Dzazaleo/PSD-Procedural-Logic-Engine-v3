@@ -83,6 +83,8 @@ export interface LayoutStrategy {
   clearance?: boolean;
   // Visual Grounding
   sourceReference?: string; // Base64 pixel data of the source container
+  // Intent Deduplication
+  promptChecksum?: string;
 }
 
 export interface TransformedLayer extends SerializableLayer {

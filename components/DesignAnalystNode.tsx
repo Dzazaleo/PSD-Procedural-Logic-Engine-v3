@@ -39,6 +39,17 @@ const MODELS: Record<ModelKey, ModelConfig> = {
   }
 };
 
+// --- Helper: Simple String Checksum ---
+const generateChecksum = (str: string): string => {
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    const char = str.charCodeAt(i);
+    hash = ((hash << 5) - hash) + char;
+    hash = hash & hash; // Convert to 32bit integer
+  }
+  return hash.toString(16);
+};
+
 // --- Subcomponent: Strategy Card Renderer ---
 const StrategyCard: React.FC<{ strategy: LayoutStrategy, modelConfig: ModelConfig }> = ({ strategy, modelConfig }) => {
     const overrideCount = strategy.overrides?.length || 0;
@@ -577,8 +588,13 @@ export const DesignAnalystNode = memo(({ id, data }: NodeProps<PSDNodeData>) => 
       
       if (!sourceData || !targetData) return;
       
-      const instanceState = analystInstances[index] || { selectedModel: 'gemini-3-flash' };
-      const modelConfig = MODELS[instanceState.selectedModel as ModelKey];
+      // Fix: Provide full default object to satisfy AnalystInstanceState type and avoid property access errors
+      const instanceState: AnalystInstanceState = analystInstances[index] || { 
+          selectedModel: 'gemini-3-flash', 
+          chatHistory: [], 
+          layoutStrategy: null 
+      };
+      const modelConfig = MODELS[instanceState.selectedModel];
       
       setAnalyzingInstances(prev => ({ ...prev, [index]: true }));
 
@@ -640,6 +656,14 @@ export const DesignAnalystNode = memo(({ id, data }: NodeProps<PSDNodeData>) => 
 
         const json = JSON.parse(response.text || '{}');
         
+        // --- PROMPT CHECKSUM & VERSIONING ---
+        const newChecksum = json.generativePrompt ? generateChecksum(json.generativePrompt) : undefined;
+        // Inject checksum into strategy for downstream consumers
+        json.promptChecksum = newChecksum;
+
+        const previousChecksum = instanceState.layoutStrategy?.promptChecksum;
+        const isPromptIdentical = newChecksum && previousChecksum && newChecksum === previousChecksum;
+
         // --- PAYLOAD ENRICHMENT: Source Pixel Extraction ---
         // If method is GENERATIVE, we must attach the source reference pixels
         if (json.method === 'GENERATIVE' || json.method === 'HYBRID') {
@@ -669,22 +693,36 @@ export const DesignAnalystNode = memo(({ id, data }: NodeProps<PSDNodeData>) => 
 
         const isExplicitIntent = history.some(msg => msg.role === 'user' && /\b(generate|recreate|nano banana)\b/i.test(msg.parts[0].text));
 
+        // Determine Preview Logic based on deduplication
+        // Retrieval of current URL from registry to preserve it if prompt is identical
+        const currentRegistryEntry = resolvedRegistry[id]?.[`source-out-${index}`];
+        const preservedUrl = isPromptIdentical ? currentRegistryEntry?.previewUrl : undefined;
+
         const augmentedContext: MappingContext = {
             ...sourceData,
             aiStrategy: {
                 ...json,
                 isExplicitIntent
             },
-            previewUrl: undefined, // Clear stale preview immediately
+            // CRITICAL: Explicitly clear previewUrl if prompt changed to prevent "Stale Ghost".
+            // If prompt is identical, we try to preserve the old one.
+            previewUrl: preservedUrl, 
             targetDimensions: targetData ? { w: targetData.bounds.w, h: targetData.bounds.h } : undefined
         };
         
-        // 1. Force update the registry without the preview first (Clear state)
+        // 1. Force update the registry
         registerResolved(id, `source-out-${index}`, augmentedContext);
 
-        // 2. Conditional Draft Generation (Debounced)
-        if ((json.method === 'GENERATIVE' || json.method === 'HYBRID') && json.generativePrompt) {
-             
+        // 2. Conditional Draft Generation (Debounced & Versioned)
+        // Only generate if:
+        // A) Method allows it
+        // B) Prompt exists
+        // C) Prompt CHANGED (Checksum mismatch) OR we don't have a preserved URL
+        const shouldGenerate = (json.method === 'GENERATIVE' || json.method === 'HYBRID') && 
+                               json.generativePrompt && 
+                               (!isPromptIdentical || !preservedUrl);
+
+        if (shouldGenerate) {
              // Clear existing timeout to prevent rapid-fire API calls
              if (draftTimeoutRef.current) clearTimeout(draftTimeoutRef.current);
 

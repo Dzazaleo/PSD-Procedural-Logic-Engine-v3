@@ -2,7 +2,6 @@ import React, { memo, useMemo, useEffect, useCallback, useState, useRef } from '
 import { Handle, Position, NodeProps, useEdges, useReactFlow, useNodes } from 'reactflow';
 import { PSDNodeData, SerializableLayer, TransformedPayload, TransformedLayer, MAX_BOUNDARY_VIOLATION_PERCENT, LayoutStrategy } from '../types';
 import { useProceduralStore } from '../store/ProceduralContext';
-import { GoogleGenAI } from "@google/genai";
 import { ChevronLeft, ChevronRight, History as HistoryIcon, Check, RotateCcw, RefreshCw } from 'lucide-react';
 
 interface InstanceData {
@@ -226,18 +225,6 @@ const GenerativePreviewOverlay = ({
                      </button>
                  </div>
              )}
-
-             <style>{`
-               @keyframes scan-y {
-                 0% { top: 0%; opacity: 0; }
-                 10% { opacity: 1; }
-                 90% { opacity: 1; }
-                 100% { top: 100%; opacity: 0; }
-               }
-               .animate-scan-y {
-                 animation: scan-y 2.5s linear infinite;
-               }
-             `}</style>
         </div>
     );
 };
@@ -248,12 +235,9 @@ export const RemapperNode = memo(({ id, data }: NodeProps<PSDNodeData>) => {
   // SOFT LOCK STATE: Stores the PROMPT STRING that was confirmed
   const [confirmations, setConfirmations] = useState<Record<number, string>>({});
   
-  // Local state for generated draft previews
-  const [previews, setPreviews] = useState<Record<number, string>>({});
-  const [isGeneratingPreview, setIsGeneratingPreview] = useState<Record<number, boolean>>({});
-  
-  // Track previous prompts to detect changes (In-Flight Logic)
-  const lastPromptsRef = useRef<Record<number, string>>({});
+  // Local state for "Restored" previews from history navigation
+  // Note: We no longer generate previews here, but we may need to override the display for history browsing
+  const [historyOverrides, setHistoryOverrides] = useState<Record<number, string>>({});
 
   // OPTIMISTIC UI STATE
   const [displayPreviews, setDisplayPreviews] = useState<Record<number, string>>({});
@@ -276,10 +260,9 @@ export const RemapperNode = memo(({ id, data }: NodeProps<PSDNodeData>) => {
   const handleConfirmGeneration = (index: number, prompt: string, restoredUrl?: string) => {
       setConfirmations(prev => ({ ...prev, [index]: prompt }));
       
-      // If we are restoring an old version, update the local preview state
-      // This triggers a pipeline update which will push the old version as the "new" current one
+      // If we are restoring an old version, update the local history override
       if (restoredUrl) {
-          setPreviews(prev => ({ ...prev, [index]: restoredUrl }));
+          setHistoryOverrides(prev => ({ ...prev, [index]: restoredUrl }));
       }
   };
 
@@ -467,6 +450,9 @@ export const RemapperNode = memo(({ id, data }: NodeProps<PSDNodeData>) => {
                 transformedLayers.unshift(genLayer);
             }
             
+            // Prefer History Override -> Upstream Source Preview -> Null
+            const finalPreviewUrl = historyOverrides[i] || sourceData.previewUrl;
+            
             payload = {
               status: status,
               sourceNodeId: sourceData.nodeId,
@@ -476,7 +462,7 @@ export const RemapperNode = memo(({ id, data }: NodeProps<PSDNodeData>) => {
               scaleFactor: scale,
               metrics: { source: { w: sourceRect.w, h: sourceRect.h }, target: { w: targetRect.w, h: targetRect.h } },
               requiresGeneration: requiresGeneration,
-              previewUrl: sourceData.previewUrl || previews[i],
+              previewUrl: finalPreviewUrl,
               isConfirmed: isConfirmed,
               sourceReference: sourceData.aiStrategy?.sourceReference
             };
@@ -492,7 +478,7 @@ export const RemapperNode = memo(({ id, data }: NodeProps<PSDNodeData>) => {
     }
 
     return result;
-  }, [instanceCount, edges, id, resolvedRegistry, templateRegistry, nodes, confirmations, previews]);
+  }, [instanceCount, edges, id, resolvedRegistry, templateRegistry, nodes, confirmations, historyOverrides]);
 
 
   // Sync Payloads to Store
@@ -504,39 +490,40 @@ export const RemapperNode = memo(({ id, data }: NodeProps<PSDNodeData>) => {
     });
   }, [instances, id, registerPayload]);
 
-  // GHOST FLUSHING
+  // GHOST FLUSHING: Reset confirmations if strategy changes to GEOMETRIC
   useEffect(() => {
     let stateChanged = false;
-    const nextPreviews = { ...previews };
     const nextConfirmations = { ...confirmations };
+    const nextHistoryOverrides = { ...historyOverrides };
 
     instances.forEach(instance => {
         const strategyMethod = instance.source.aiStrategy?.method;
         const idx = instance.index;
 
         if (strategyMethod === 'GEOMETRIC') {
-            if (nextPreviews[idx]) {
-                delete nextPreviews[idx];
-                stateChanged = true;
-            }
             if (nextConfirmations[idx]) {
                 delete nextConfirmations[idx];
+                stateChanged = true;
+            }
+            if (nextHistoryOverrides[idx]) {
+                delete nextHistoryOverrides[idx];
                 stateChanged = true;
             }
         }
     });
 
     if (stateChanged) {
-        setPreviews(nextPreviews);
         setConfirmations(nextConfirmations);
+        setHistoryOverrides(nextHistoryOverrides);
     }
-  }, [instances, previews, confirmations]);
+  }, [instances, confirmations, historyOverrides]);
 
-  // OPTIMISTIC LOCK
+  // OPTIMISTIC LOCK: Visual Stability during upstream updates
   useEffect(() => {
     instances.forEach(instance => {
         const idx = instance.index;
-        const incomingUrl = instance.payload?.previewUrl || previews[idx];
+        // Prefer explicit history overrides, then payload/source previews
+        const incomingUrl = historyOverrides[idx] || instance.payload?.previewUrl;
         const currentUrl = displayPreviews[idx];
         const isLocked = isTransitioningRef.current[idx];
 
@@ -549,7 +536,8 @@ export const RemapperNode = memo(({ id, data }: NodeProps<PSDNodeData>) => {
                      if (isTransitioningRef.current[idx]) isTransitioningRef.current[idx] = false;
                  }, 800);
              }
-        } else if (currentUrl) {
+        } else if (currentUrl && !incomingUrl) {
+            // Only clear if no incoming URL is present (clearing the ghost)
             setDisplayPreviews(prev => {
                 const next = { ...prev };
                 delete next[idx];
@@ -558,73 +546,7 @@ export const RemapperNode = memo(({ id, data }: NodeProps<PSDNodeData>) => {
             isTransitioningRef.current[idx] = false;
         }
     });
-  }, [instances, previews, displayPreviews]);
-
-  // LAZY SYNTHESIS
-  useEffect(() => {
-    instances.forEach(instance => {
-        const idx = instance.index;
-        const strategy = instance.source.aiStrategy;
-        const currentPrompt = strategy?.generativePrompt;
-        
-        const lastPrompt = lastPromptsRef.current[idx];
-        const hasPrompt = !!currentPrompt;
-        const promptChanged = hasPrompt && currentPrompt !== lastPrompt;
-        
-        const isAwaiting = instance.payload?.status === 'awaiting_confirmation';
-        const hasPreview = !!(instance.payload?.previewUrl || previews[idx]);
-        const needsInitialPreview = isAwaiting && hasPrompt && !hasPreview;
-
-        if (promptChanged || needsInitialPreview) {
-             if (isGeneratingPreview[idx] && !promptChanged) return;
-             if (currentPrompt) lastPromptsRef.current[idx] = currentPrompt;
-
-             const prompt = currentPrompt!;
-             const sourceRef = instance.source.aiStrategy?.sourceReference;
-             
-             const generateDraft = async () => {
-                 setIsGeneratingPreview(prev => ({...prev, [idx]: true}));
-                 
-                 try {
-                     const apiKey = process.env.API_KEY;
-                     if (!apiKey) return;
-                     const ai = new GoogleGenAI({ apiKey });
-                     const parts: any[] = [];
-                     if (sourceRef) {
-                         const base64Data = sourceRef.includes('base64,') ? sourceRef.split('base64,')[1] : sourceRef;
-                         parts.push({ inlineData: { mimeType: 'image/png', data: base64Data } });
-                     }
-                     parts.push({ text: prompt });
-
-                     const response = await ai.models.generateContent({
-                        model: 'gemini-2.5-flash-image',
-                        contents: { parts },
-                        config: { imageConfig: { aspectRatio: "1:1" } }
-                     });
-                     
-                     let base64Data = null;
-                     for (const part of response.candidates?.[0]?.content?.parts || []) {
-                        if (part.inlineData) {
-                            base64Data = part.inlineData.data;
-                            break;
-                        }
-                     }
-                     
-                     if (base64Data) {
-                         const url = `data:image/png;base64,${base64Data}`;
-                         setPreviews(prev => ({...prev, [idx]: url}));
-                     }
-
-                 } catch (e) {
-                     console.error("Draft Generation Failed", e);
-                 } finally {
-                     setIsGeneratingPreview(prev => ({...prev, [idx]: false}));
-                 }
-             };
-             generateDraft();
-        }
-    });
-  }, [instances, previews, isGeneratingPreview]);
+  }, [instances, historyOverrides, displayPreviews]);
 
 
   const addInstance = useCallback(() => {
@@ -664,6 +586,13 @@ export const RemapperNode = memo(({ id, data }: NodeProps<PSDNodeData>) => {
              const storePayload = payloadRegistry[id]?.[`result-out-${instance.index}`];
              const history = storePayload?.history || [];
 
+             // Detect if upstream analyst is currently thinking/generating (via preview placeholder logic or status)
+             // Since we removed local generation, we can infer "Generating" if the source has a strategy but no previewUrl yet,
+             // although the Analyst usually pushes them together. A simpler approach is to rely on "refinementPending" 
+             // or check if the displayPreview is being updated.
+             // For now, we will pass false to isGenerating as the overlay handles the 'Synthesizing' state via empty image if needed.
+             // Or better: The Overlay handles "Loading" if displayUrl is null but we expect one.
+             
              return (
              <div key={instance.index} className="relative p-3 border-b border-slate-700/50 bg-slate-800 space-y-3 hover:bg-slate-700/20 transition-colors first:rounded-t-none">
                 
@@ -762,9 +691,9 @@ export const RemapperNode = memo(({ id, data }: NodeProps<PSDNodeData>) => {
                                    )}
                                    
                                    <GenerativePreviewOverlay 
-                                       previewUrl={displayPreviews[instance.index] || instance.payload.previewUrl || previews[instance.index]}
+                                       previewUrl={displayPreviews[instance.index] || instance.payload.previewUrl}
                                        history={history}
-                                       isGenerating={!!isGeneratingPreview[instance.index]}
+                                       isGenerating={false} // Upstream handled
                                        scale={instance.payload.scaleFactor}
                                        onConfirm={(url) => handleConfirmGeneration(instance.index, instance.source.aiStrategy?.generativePrompt || '', url)}
                                        canConfirm={isAwaiting || refinementPending}
