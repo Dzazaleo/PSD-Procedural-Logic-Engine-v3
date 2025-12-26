@@ -148,6 +148,7 @@ export interface TransformedPayload {
   previewUrl?: string;
   isConfirmed?: boolean;
   sourceReference?: string; // Carried over from Strategy for Export/Gen use
+  history?: string[]; // History of preview URLs for navigation/undo
 }
 
 export interface RemapperConfig {

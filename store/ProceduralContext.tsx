@@ -110,11 +110,34 @@ export const ProceduralStoreProvider: React.FC<{ children: React.ReactNode }> = 
       const nodeRecord = prev[nodeId] || {};
       const currentPayload = nodeRecord[handleId];
 
-      if (currentPayload === payload) return prev;
+      // GHOST HISTORY MANAGEMENT
+      // We want to preserve previous draft versions (history) when a new one arrives.
+      // Logic:
+      // 1. Start with existing history or empty array.
+      // 2. If the current payload has a previewUrl AND it's different from the new one, push it to history.
+      // 3. Attach this history to the new payload object before saving.
+      
+      let nextHistory = currentPayload?.history || [];
+      
+      // Determine if this is a "Visual Update" (Draft Refresh)
+      const hasPreviousUrl = !!(currentPayload && currentPayload.previewUrl);
+      const isNewUrl = hasPreviousUrl && currentPayload!.previewUrl !== payload.previewUrl;
+      const isValidNewUrl = !!payload.previewUrl;
 
-      // CHECK FOR NON-BILLABLE DRAFT REFRESH
-      // If the payload exists and the only significant change is the previewUrl,
-      // we identify this as a visual refinement ("Ghost") update.
+      if (isNewUrl && isValidNewUrl) {
+          // Push old URL to history stack
+          // Limit to last 5 versions to prevent memory bloat
+          nextHistory = [...nextHistory, currentPayload!.previewUrl!].slice(-5);
+      }
+
+      // Merge calculated history into the incoming payload
+      // NOTE: We do this merging even if JSON match is true later, effectively ensuring history persistence
+      // across equivalent structural updates.
+      const payloadWithHistory = { ...payload, history: nextHistory };
+
+      if (currentPayload === payloadWithHistory) return prev;
+
+      // CHECK FOR NON-BILLABLE DRAFT REFRESH (Event Emission)
       if (currentPayload) {
           const isPreviewChanged = currentPayload.previewUrl !== payload.previewUrl;
           
@@ -125,7 +148,6 @@ export const ProceduralStoreProvider: React.FC<{ children: React.ReactNode }> = 
 
           if (isPreviewChanged && isStructureStable) {
                // EMIT EVENT: Notify listeners (RemapperNode UI) of a non-billable visual update.
-               // This allows the UI to trigger animations or feedback without re-mounting entirely.
                const event = new CustomEvent('payload-updated', { 
                    detail: { 
                        nodeId, 
@@ -135,18 +157,18 @@ export const ProceduralStoreProvider: React.FC<{ children: React.ReactNode }> = 
                        newPreviewUrl: payload.previewUrl
                    } 
                });
-               // Dispatch on next tick to avoid synchronous side-effects inside state setter
                setTimeout(() => window.dispatchEvent(event), 0);
           }
       }
 
-      if (currentPayload && JSON.stringify(currentPayload) === JSON.stringify(payload)) return prev;
+      // Deep equality check including the history we just injected
+      if (currentPayload && JSON.stringify(currentPayload) === JSON.stringify(payloadWithHistory)) return prev;
 
       return { 
         ...prev, 
         [nodeId]: {
             ...nodeRecord,
-            [handleId]: payload
+            [handleId]: payloadWithHistory
         } 
       };
     });

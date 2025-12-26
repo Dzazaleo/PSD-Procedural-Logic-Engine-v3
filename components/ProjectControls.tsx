@@ -14,7 +14,7 @@ export const ProjectControls = () => {
         // PERSISTENCE EXCLUSION: Strip transient "AI Ghost" images (base64) from JSON
         // This ensures the saved file remains lightweight (~KB instead of MBs)
         const sanitizedNodes = flow.nodes.map(node => {
-            if (node.data && node.data.transformedPayload && node.data.transformedPayload.previewUrl) {
+            if (node.data && node.data.transformedPayload) {
                 // Clone the data structure to safely mutate the copy
                 return {
                     ...node,
@@ -22,7 +22,8 @@ export const ProjectControls = () => {
                         ...node.data,
                         transformedPayload: {
                             ...node.data.transformedPayload,
-                            previewUrl: undefined // Remove binary data
+                            previewUrl: undefined, // Remove current binary data
+                            history: undefined     // Remove history binary data
                         }
                     }
                 };

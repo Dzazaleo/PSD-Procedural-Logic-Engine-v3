@@ -3,6 +3,7 @@ import { Handle, Position, NodeProps, useEdges, useReactFlow, useNodes } from 'r
 import { PSDNodeData, SerializableLayer, TransformedPayload, TransformedLayer, MAX_BOUNDARY_VIOLATION_PERCENT, LayoutStrategy } from '../types';
 import { useProceduralStore } from '../store/ProceduralContext';
 import { GoogleGenAI } from "@google/genai";
+import { ChevronLeft, ChevronRight, History as HistoryIcon } from 'lucide-react';
 
 interface InstanceData {
   index: number;
@@ -29,9 +30,10 @@ interface InstanceData {
 // --- SUB-COMPONENT: Generative Preview Overlay ---
 interface OverlayProps {
     previewUrl?: string | null;
+    history?: string[];
     isGenerating: boolean;
     scale: number;
-    onConfirm: () => void;
+    onConfirm: (url?: string) => void;
     userCredits: number;
     canConfirm: boolean;
     isConfirmed: boolean;
@@ -43,6 +45,7 @@ interface OverlayProps {
 
 const GenerativePreviewOverlay = ({ 
     previewUrl, 
+    history = [],
     isGenerating,
     scale,
     onConfirm,
@@ -57,16 +60,50 @@ const GenerativePreviewOverlay = ({
     // Dynamic Ratio Calculation
     const { w, h } = targetDimensions || { w: 1, h: 1 };
     const ratio = w / h;
-    
-    // Constraint Logic: 
-    // We want the container to fill the width (up to 100%) but NOT exceed 240px in height.
-    // Since aspect-ratio relates width and height, we calculate the maximum width 
-    // that would result in a 240px height.
-    // h = w / ratio => 240 = w / ratio => w = 240 * ratio.
     const maxWidthStyle = `${240 * ratio}px`;
+    
+    // Ghost History Logic
+    // Flatten history + current into a navigable list
+    // If previewUrl changes, we reset to the end of the list
+    const [viewIndex, setViewIndex] = useState(-1);
+    
+    // Construct the timeline: [oldest, ..., newest]
+    // Filter out nulls/undefined to be safe
+    const timeline = useMemo(() => {
+        const list = [...history];
+        if (previewUrl && !list.includes(previewUrl)) {
+            list.push(previewUrl);
+        }
+        return list;
+    }, [history, previewUrl]);
+
+    // Initialize/Reset View to Latest when timeline grows
+    useEffect(() => {
+        if (timeline.length > 0) {
+            setViewIndex(timeline.length - 1);
+        }
+    }, [timeline.length]);
+
+    // Handle Bounds
+    const safeIndex = Math.max(0, Math.min(viewIndex, timeline.length - 1));
+    const displayUrl = timeline[safeIndex];
+    
+    // Navigation Handlers
+    const goPrev = (e: React.MouseEvent) => {
+        e.stopPropagation();
+        setViewIndex(prev => Math.max(0, prev - 1));
+    };
+    
+    const goNext = (e: React.MouseEvent) => {
+        e.stopPropagation();
+        setViewIndex(prev => Math.min(timeline.length - 1, prev + 1));
+    };
+
+    const isLatest = safeIndex === timeline.length - 1;
+    const hasHistory = timeline.length > 1;
 
     return (
-        <div className={`relative w-full mt-2 rounded-md overflow-hidden bg-slate-900/50 border transition-all duration-500 flex justify-center ${isGenerating ? 'border-indigo-500/30' : 'border-purple-500/50'}`}>
+        <div className={`relative w-full mt-2 rounded-md overflow-hidden bg-slate-900/50 border transition-all duration-500 flex justify-center flex-col items-center ${isGenerating ? 'border-indigo-500/30' : 'border-purple-500/50'}`}>
              {/* Aspect Ratio Container */}
              <div 
                 className="relative w-full flex items-center justify-center overflow-hidden group shadow-inner bg-black/20"
@@ -93,9 +130,9 @@ const GenerativePreviewOverlay = ({
                  )}
                  
                  {/* 1. The Ghost Image */}
-                 {previewUrl ? (
+                 {displayUrl ? (
                      <img 
-                        src={previewUrl} 
+                        src={displayUrl} 
                         onLoad={onImageLoad}
                         alt="AI Ghost" 
                         className={`w-full h-full object-cover transition-all duration-700 
@@ -119,16 +156,18 @@ const GenerativePreviewOverlay = ({
                      </div>
                  )}
 
-                 {/* 3. Button Overlay - Only if waiting for confirmation */}
-                 {canConfirm && !isConfirmed && previewUrl && (
-                     <div className="absolute inset-0 z-30 flex items-center justify-center bg-black/30 backdrop-blur-[1px] opacity-0 group-hover:opacity-100 transition-opacity duration-300">
-                         {userCredits > 0 ? (
+                 {/* 3. Button Overlay - Only if waiting for confirmation OR if reviewing history */}
+                 {/* We allow confirming historical items to restore them */}
+                 {displayUrl && (
+                     <div className={`absolute inset-0 z-30 flex items-center justify-center bg-black/30 backdrop-blur-[1px] transition-opacity duration-300 ${!canConfirm && isLatest ? 'opacity-0 group-hover:opacity-100' : 'opacity-100'}`}>
+                        {(canConfirm || !isLatest || !isConfirmed) && (
+                         userCredits > 0 ? (
                              <button 
-                                onClick={(e) => { e.stopPropagation(); onConfirm(); }}
+                                onClick={(e) => { e.stopPropagation(); onConfirm(displayUrl); }}
                                 className="bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white py-2 px-4 rounded shadow-[0_0_15px_rgba(168,85,247,0.5)] border border-white/20 transform hover:scale-105 transition-all flex flex-col items-center"
                              >
                                 <span className="text-[10px] font-bold uppercase tracking-wider">
-                                    {refinementPending ? 'Update Generation' : 'Confirm Generation'}
+                                    {!isLatest ? 'Restore Version' : refinementPending ? 'Update Generation' : 'Confirm Generation'}
                                 </span>
                                 <span className="text-[8px] opacity-90 font-mono mt-0.5">1 Credit Cost</span>
                              </button>
@@ -136,18 +175,19 @@ const GenerativePreviewOverlay = ({
                              <div className="bg-red-900/90 border border-red-500 text-red-100 px-3 py-2 rounded text-[10px] font-bold uppercase tracking-wider shadow-lg backdrop-blur-md">
                                  Insufficient Credits
                              </div>
-                         )}
+                         )
+                        )}
                      </div>
                  )}
 
                  {/* 4. Status Badge */}
                  <div className="absolute bottom-2 left-2 z-20 flex items-center space-x-2 pointer-events-none">
                      <span className={`text-[8px] px-1.5 py-0.5 rounded border backdrop-blur-sm shadow-[0_0_8px_rgba(168,85,247,0.4)]
-                        ${isConfirmed 
+                        ${isConfirmed && isLatest
                             ? 'bg-emerald-900/80 text-emerald-200 border-emerald-500/50' 
                             : 'bg-purple-900/80 text-purple-200 border-purple-500/50'
                         }`}>
-                         {isConfirmed ? 'GHOST CONFIRMED' : 'AI GHOST'}
+                         {isConfirmed && isLatest ? 'GHOST CONFIRMED' : !isLatest ? `HISTORY (${safeIndex + 1}/${timeline.length})` : 'AI GHOST'}
                      </span>
                      {isGenerating && (
                          <span className="flex h-1.5 w-1.5 relative">
@@ -158,6 +198,36 @@ const GenerativePreviewOverlay = ({
                  </div>
              </div>
              
+             {/* 5. History Controls (Bottom Bar) */}
+             {hasHistory && (
+                 <div className="w-full flex items-center justify-between px-2 py-1 bg-black/40 border-t border-white/5">
+                     <button 
+                         onClick={goPrev}
+                         disabled={safeIndex === 0}
+                         className={`p-1 rounded hover:bg-white/10 transition-colors ${safeIndex === 0 ? 'text-slate-600 cursor-not-allowed' : 'text-slate-300'}`}
+                     >
+                         <ChevronLeft size={12} />
+                     </button>
+                     
+                     <div className="flex space-x-1">
+                         {timeline.map((_, i) => (
+                             <div 
+                                key={i} 
+                                className={`w-1 h-1 rounded-full transition-colors ${i === safeIndex ? 'bg-purple-400' : 'bg-slate-600'}`}
+                             />
+                         ))}
+                     </div>
+
+                     <button 
+                         onClick={goNext}
+                         disabled={safeIndex === timeline.length - 1}
+                         className={`p-1 rounded hover:bg-white/10 transition-colors ${safeIndex === timeline.length - 1 ? 'text-slate-600 cursor-not-allowed' : 'text-slate-300'}`}
+                     >
+                         <ChevronRight size={12} />
+                     </button>
+                 </div>
+             )}
+
              <style>{`
                @keyframes scan-y {
                  0% { top: 0%; opacity: 0; }
@@ -176,8 +246,7 @@ const GenerativePreviewOverlay = ({
 export const RemapperNode = memo(({ id, data }: NodeProps<PSDNodeData>) => {
   // Read instance count from persistent data, default to 1 if new/undefined
   const instanceCount = data.instanceCount || 1;
-  // SOFT LOCK STATE: Stores the PROMPT STRING that was confirmed, not just a boolean
-  // This allows us to auto-reset confirmation if the prompt changes (Refinement)
+  // SOFT LOCK STATE: Stores the PROMPT STRING that was confirmed
   const [confirmations, setConfirmations] = useState<Record<number, string>>({});
   
   // Local state for generated draft previews
@@ -187,7 +256,7 @@ export const RemapperNode = memo(({ id, data }: NodeProps<PSDNodeData>) => {
   // Track previous prompts to detect changes (In-Flight Logic)
   const lastPromptsRef = useRef<Record<number, string>>({});
 
-  // OPTIMISTIC UI STATE: Prevents flicker by locking updates until images load
+  // OPTIMISTIC UI STATE
   const [displayPreviews, setDisplayPreviews] = useState<Record<number, string>>({});
   const isTransitioningRef = useRef<Record<number, boolean>>({});
 
@@ -196,28 +265,32 @@ export const RemapperNode = memo(({ id, data }: NodeProps<PSDNodeData>) => {
   const nodes = useNodes();
   
   // Consume data from Store
-  const { templateRegistry, resolvedRegistry, registerPayload, unregisterNode, userCredits } = useProceduralStore();
+  const { templateRegistry, resolvedRegistry, payloadRegistry, registerPayload, unregisterNode, userCredits } = useProceduralStore();
 
   // Cleanup
   useEffect(() => {
     return () => unregisterNode(id);
   }, [id, unregisterNode]);
 
-  // Handle Confirmation Toggle
-  const handleConfirmGeneration = (index: number, prompt: string) => {
+  // Handle Confirmation & Restoration
+  // If `restoredUrl` is provided (from History Nav), we force it as current
+  const handleConfirmGeneration = (index: number, prompt: string, restoredUrl?: string) => {
       setConfirmations(prev => ({ ...prev, [index]: prompt }));
+      
+      // If we are restoring an old version, update the local preview state
+      // This triggers a pipeline update which will push the old version as the "new" current one
+      if (restoredUrl) {
+          setPreviews(prev => ({ ...prev, [index]: restoredUrl }));
+      }
   };
 
   const handleImageLoad = useCallback((index: number) => {
-      // Release the optimistic lock once the browser has confirmed the image is ready to render
       isTransitioningRef.current[index] = false;
   }, []);
 
   // Compute Data for ALL Instances
   const instances: InstanceData[] = useMemo(() => {
     const result: InstanceData[] = [];
-
-    // Find original LoadPSDNode to ensure the Export node can find the binary data
     const loadPsdNode = nodes.find(n => n.type === 'loadPsd');
 
     for (let i = 0; i < instanceCount; i++) {
@@ -239,12 +312,12 @@ export const RemapperNode = memo(({ id, data }: NodeProps<PSDNodeData>) => {
                         name: context.container.containerName,
                         nodeId: binarySourceId,
                         sourceNodeId: sourceEdge.source,
-                        handleId: sourceEdge.sourceHandle, // Important for strategy lookup
+                        handleId: sourceEdge.sourceHandle,
                         layers: context.layers,
                         originalBounds: context.container.bounds,
-                        aiStrategy: context.aiStrategy, // Extract injected strategy if present
-                        previewUrl: context.previewUrl, // Extract upstream preview if present
-                        targetDimensions: context.targetDimensions // Extract explicit target dims if present
+                        aiStrategy: context.aiStrategy,
+                        previewUrl: context.previewUrl,
+                        targetDimensions: context.targetDimensions
                     };
                  }
              }
@@ -259,30 +332,17 @@ export const RemapperNode = memo(({ id, data }: NodeProps<PSDNodeData>) => {
              if (template) {
                  const handle = targetEdge.sourceHandle;
                  let containerDefinition;
-
-                 // Strategy A: Exact Name Match (e.g. "BG")
                  containerDefinition = template.containers.find(c => c.name === handle);
-
-                 // Strategy B: Bounds Prefix Match (e.g. "slot-bounds-BG")
                  if (!containerDefinition && handle.startsWith('slot-bounds-')) {
                      const clean = handle.replace('slot-bounds-', '');
                      containerDefinition = template.containers.find(c => c.name === clean);
                  }
-
-                 // Strategy C: Indexed Handle Match (e.g. "target-out-0")
-                 // This resolves proxy handles from DesignAnalystNode to the actual container by index
                  if (!containerDefinition) {
                      const indexMatch = handle.match(/^target-out-(\d+)$/);
-                     if (indexMatch) {
-                         const index = parseInt(indexMatch[1], 10);
-                         // Access container by index if valid
-                         if (template.containers[index]) {
-                             containerDefinition = template.containers[index];
-                         }
+                     if (indexMatch && template.containers[parseInt(indexMatch[1], 10)]) {
+                         containerDefinition = template.containers[parseInt(indexMatch[1], 10)];
                      }
                  }
-
-                 // Strategy D: Fallback for Single Container Templates
                  if (!containerDefinition && template.containers.length === 1) {
                      containerDefinition = template.containers[0];
                  }
@@ -290,9 +350,6 @@ export const RemapperNode = memo(({ id, data }: NodeProps<PSDNodeData>) => {
                  if (containerDefinition) {
                      targetData = {
                          ready: true,
-                         // CRITICAL: Prefer originalName (e.g., "BG") over name (e.g., "target-out-0").
-                         // This ensures the payload carries the semantic name required by the Export node,
-                         // even if the connection comes from a proxy node with synthetic naming.
                          name: containerDefinition.originalName || containerDefinition.name,
                          bounds: containerDefinition.bounds
                      };
@@ -308,35 +365,23 @@ export const RemapperNode = memo(({ id, data }: NodeProps<PSDNodeData>) => {
             const sourceRect = sourceData.originalBounds;
             const targetRect = targetData.bounds;
             
-            // MATH: Default Geometric Logic
             const ratioX = targetRect.w / sourceRect.w;
             const ratioY = targetRect.h / sourceRect.h;
             let scale = Math.min(ratioX, ratioY);
             let anchorX = targetRect.x;
             let anchorY = targetRect.y;
 
-            // AI: Check for Strategy Injected in Source Data
-            // This is the metadata injection pattern (Analyst -> Remapper)
             const strategy = sourceData.aiStrategy;
             
             if (strategy) {
                 scale = strategy.suggestedScale;
                 strategyUsed = true;
-                
                 const scaledW = sourceRect.w * scale;
                 const scaledH = sourceRect.h * scale;
-
-                // Horizontal Centering (Default)
                 anchorX = targetRect.x + (targetRect.w - scaledW) / 2;
-
-                // Vertical Anchor Logic
-                if (strategy.anchor === 'TOP') {
-                    anchorY = targetRect.y;
-                } else if (strategy.anchor === 'BOTTOM') {
-                    anchorY = targetRect.y + (targetRect.h - scaledH);
-                } else {
-                    anchorY = targetRect.y + (targetRect.h - scaledH) / 2;
-                }
+                if (strategy.anchor === 'TOP') anchorY = targetRect.y;
+                else if (strategy.anchor === 'BOTTOM') anchorY = targetRect.y + (targetRect.h - scaledH);
+                else anchorY = targetRect.y + (targetRect.h - scaledH) / 2;
             } else {
                 const scaledW = sourceRect.w * scale;
                 const scaledH = sourceRect.h * scale;
@@ -344,117 +389,71 @@ export const RemapperNode = memo(({ id, data }: NodeProps<PSDNodeData>) => {
                 anchorY = targetRect.y + (targetRect.h - scaledH) / 2;
             }
 
-            // --- RECURSIVE TRANSFORMATION ENGINE ---
-            const transformLayers = (
-                layers: SerializableLayer[], 
-                parentDeltaX: number = 0, 
-                parentDeltaY: number = 0
-            ): TransformedLayer[] => {
+            const transformLayers = (layers: SerializableLayer[], parentDeltaX = 0, parentDeltaY = 0): TransformedLayer[] => {
               return layers.map(layer => {
-                // 1. Calculate Geometric Baseline (Global Relative)
-                // This places the layer based on standard scaling/centering rules
                 const relX = (layer.coords.x - sourceRect.x) / sourceRect.w;
                 const relY = (layer.coords.y - sourceRect.y) / sourceRect.h;
-
                 const geomX = anchorX + (relX * (sourceRect.w * scale));
                 const geomY = anchorY + (relY * (sourceRect.h * scale));
-
-                // 2. Apply Inherited Delta (Hierarchy Preservation)
-                // If a parent moved, this layer moves with it by default
                 let finalX = geomX + parentDeltaX;
                 let finalY = geomY + parentDeltaY;
-                
                 let layerScaleX = scale;
                 let layerScaleY = scale;
-
-                // 3. Apply AI Overrides (Local-to-Global Injection)
                 const override = strategy?.overrides?.find(o => o.layerId === layer.id);
                 let currentDeltaX = parentDeltaX;
                 let currentDeltaY = parentDeltaY;
 
                 if (override) {
-                   // Semantic Recomposition: AI dictates exact position in Target Context
-                   // We switch to absolute anchoring based on Target Top-Left
                    const aiX = targetRect.x + override.xOffset;
                    const aiY = targetRect.y + override.yOffset;
-
-                   // Override dictates the new position
                    finalX = aiX;
                    finalY = aiY;
-
-                   // Calculate the NEW delta created by this override to pass to children
-                   // This ensures children of an overridden group follow the group's new location
                    currentDeltaX = finalX - geomX;
                    currentDeltaY = finalY - geomY;
-
-                   // Apply individual scale
                    layerScaleX *= override.individualScale;
                    layerScaleY *= override.individualScale;
                 }
 
-                // 4. Boundary Enforcement (Clamping)
                 const bleedY = targetRect.h * MAX_BOUNDARY_VIOLATION_PERCENT;
                 const minY = targetRect.y - bleedY;
                 const maxY = targetRect.y + targetRect.h + bleedY;
-
-                // Clamp Y to prevent flying off canvas
                 finalY = Math.max(minY, Math.min(finalY, maxY));
-
                 const newW = layer.coords.w * layerScaleX;
                 const newH = layer.coords.h * layerScaleY;
 
                 return {
                   ...layer,
                   coords: { x: finalX, y: finalY, w: newW, h: newH },
-                  transform: {
-                    scaleX: layerScaleX,
-                    scaleY: layerScaleY,
-                    offsetX: finalX,
-                    offsetY: finalY
-                  },
-                  children: layer.children 
-                    ? transformLayers(layer.children, currentDeltaX, currentDeltaY) 
-                    : undefined
+                  transform: { scaleX: layerScaleX, scaleY: layerScaleY, offsetX: finalX, offsetY: finalY },
+                  children: layer.children ? transformLayers(layer.children, currentDeltaX, currentDeltaY) : undefined
                 };
               });
             };
 
             const transformedLayers = transformLayers(sourceData.layers as SerializableLayer[]);
 
-            // --- GENERATIVE INJECTION LOGIC GATE ---
             let requiresGeneration = false;
             let status: TransformedPayload['status'] = 'success';
             let generativePromptUsed = null;
             
-            // SOFT LOCK LOGIC: Confirmation is valid only if prompts match
             const currentPrompt = sourceData.aiStrategy?.generativePrompt;
             const confirmedPrompt = confirmations[i];
             const isConfirmed = !!currentPrompt && currentPrompt === confirmedPrompt;
 
             if (currentPrompt) {
-                const scaleThreshold = 2.0; // 200% stretch safety limit
+                const scaleThreshold = 2.0;
                 const isExplicit = sourceData.aiStrategy!.isExplicitIntent;
                 const isHighStretch = scale > scaleThreshold;
                 const hasCredits = userCredits > 0;
-                
-                // Logic: A generative prompt exists. We need to decide if we use it.
-                // Using it means setting requiresGeneration = true.
-                
-                // Case 1: Confirmed via UI
                 if (isConfirmed && hasCredits) {
                     requiresGeneration = true;
                     generativePromptUsed = currentPrompt;
                     status = 'success';
-                }
-                // Case 2: Needs Confirmation (Explicit Intent OR High Stretch)
-                else if (isExplicit || isHighStretch) {
+                } else if (isExplicit || isHighStretch) {
                     status = 'awaiting_confirmation';
                 }
-                // Case 3: Geometric Fallback (Implicit, low stretch, no confirmation)
-                // We do nothing, requiresGeneration stays false.
             }
 
-            // Only inject the layer if the GATE opened (requiresGeneration is true)
             if (requiresGeneration && generativePromptUsed) {
                 const genLayer: TransformedLayer = {
                     id: `gen-layer-${sourceData.name || 'unknown'}`,
@@ -462,22 +461,10 @@ export const RemapperNode = memo(({ id, data }: NodeProps<PSDNodeData>) => {
                     type: 'generative',
                     isVisible: true,
                     opacity: 1,
-                    coords: {
-                        x: targetRect.x,
-                        y: targetRect.y,
-                        w: targetRect.w,
-                        h: targetRect.h
-                    },
-                    transform: {
-                        scaleX: 1,
-                        scaleY: 1,
-                        offsetX: targetRect.x,
-                        offsetY: targetRect.y
-                    },
+                    coords: { x: targetRect.x, y: targetRect.y, w: targetRect.w, h: targetRect.h },
+                    transform: { scaleX: 1, scaleY: 1, offsetX: targetRect.x, offsetY: targetRect.y },
                     generativePrompt: generativePromptUsed
                 };
-                
-                // Prepend to ensure it acts as a background/fill base
                 transformedLayers.unshift(genLayer);
             }
             
@@ -485,19 +472,13 @@ export const RemapperNode = memo(({ id, data }: NodeProps<PSDNodeData>) => {
               status: status,
               sourceNodeId: sourceData.nodeId,
               sourceContainer: sourceData.name,
-              targetContainer: targetData.name, // Will be originalName (e.g. "BG")
+              targetContainer: targetData.name,
               layers: transformedLayers,
               scaleFactor: scale,
-              metrics: {
-                source: { w: sourceRect.w, h: sourceRect.h },
-                target: { w: targetRect.w, h: targetRect.h }
-              },
+              metrics: { source: { w: sourceRect.w, h: sourceRect.h }, target: { w: targetRect.w, h: targetRect.h } },
               requiresGeneration: requiresGeneration,
-              // Attach any generated preview URL for persistence/usage
-              // PRIORITIZE UPSTREAM PREVIEW if available
               previewUrl: sourceData.previewUrl || previews[i],
               isConfirmed: isConfirmed,
-              // VISUAL GROUNDING: Pass source pixel buffer if available
               sourceReference: sourceData.aiStrategy?.sourceReference
             };
         }
@@ -524,7 +505,7 @@ export const RemapperNode = memo(({ id, data }: NodeProps<PSDNodeData>) => {
     });
   }, [instances, id, registerPayload]);
 
-  // GHOST FLUSHING: Auto-cleanup when strategy reverts to GEOMETRIC
+  // GHOST FLUSHING
   useEffect(() => {
     let stateChanged = false;
     const nextPreviews = { ...previews };
@@ -534,9 +515,6 @@ export const RemapperNode = memo(({ id, data }: NodeProps<PSDNodeData>) => {
         const strategyMethod = instance.source.aiStrategy?.method;
         const idx = instance.index;
 
-        // Logic: If the Analyst explicitly switches to GEOMETRIC, 
-        // we must purge any lingering generative artifacts (ghosts/confirmations)
-        // to prevent the UI from showing stale states or expanding unnecessarily.
         if (strategyMethod === 'GEOMETRIC') {
             if (nextPreviews[idx]) {
                 delete nextPreviews[idx];
@@ -555,37 +533,24 @@ export const RemapperNode = memo(({ id, data }: NodeProps<PSDNodeData>) => {
     }
   }, [instances, previews, confirmations]);
 
-  // OPTIMISTIC LOCK SYNCHRONIZATION: Prevent Revert/Flicker
+  // OPTIMISTIC LOCK
   useEffect(() => {
     instances.forEach(instance => {
         const idx = instance.index;
-        // Determine the "Incoming" Truth (Upstream or Local)
         const incomingUrl = instance.payload?.previewUrl || previews[idx];
         const currentUrl = displayPreviews[idx];
         const isLocked = isTransitioningRef.current[idx];
 
         if (incomingUrl) {
              if (incomingUrl !== currentUrl) {
-                 // Case: New URL arrived
-                 if (isLocked) {
-                     // We are transitioning (loading) a previous update. 
-                     // Ignore this update (assume it's a stale flicker or race condition).
-                     return;
-                 }
-
-                 // Start Transition
+                 if (isLocked) return;
                  isTransitioningRef.current[idx] = true;
                  setDisplayPreviews(prev => ({ ...prev, [idx]: incomingUrl }));
-
-                 // Failsafe: Release lock after 800ms if onLoad never fires
                  setTimeout(() => {
-                     if (isTransitioningRef.current[idx]) {
-                         isTransitioningRef.current[idx] = false;
-                     }
+                     if (isTransitioningRef.current[idx]) isTransitioningRef.current[idx] = false;
                  }, 800);
              }
         } else if (currentUrl) {
-            // Case: URL cleared upstream. Clear immediately (no lock needed for removal)
             setDisplayPreviews(prev => {
                 const next = { ...prev };
                 delete next[idx];
@@ -596,33 +561,23 @@ export const RemapperNode = memo(({ id, data }: NodeProps<PSDNodeData>) => {
     });
   }, [instances, previews, displayPreviews]);
 
-  // LAZY SYNTHESIS & PROMPT MONITORING: Generate Drafts when AWAITING_CONFIRMATION or PROMPT CHANGED
+  // LAZY SYNTHESIS
   useEffect(() => {
     instances.forEach(instance => {
         const idx = instance.index;
         const strategy = instance.source.aiStrategy;
         const currentPrompt = strategy?.generativePrompt;
         
-        // 1. Detect Prompt Change (In-Flight Logic)
         const lastPrompt = lastPromptsRef.current[idx];
         const hasPrompt = !!currentPrompt;
         const promptChanged = hasPrompt && currentPrompt !== lastPrompt;
         
-        // 2. Detect Missing Preview (Initial Load Logic)
-        // We check if we have ANY preview (upstream or local)
         const isAwaiting = instance.payload?.status === 'awaiting_confirmation';
         const hasPreview = !!(instance.payload?.previewUrl || previews[idx]);
         const needsInitialPreview = isAwaiting && hasPrompt && !hasPreview;
 
-        // Condition to trigger generation:
-        // A. Prompt changed (Refresh)
-        // B. No preview exists yet (Lazy Load)
         if (promptChanged || needsInitialPreview) {
-             // Avoid double-triggering if already working on THIS prompt
-             // But if prompt changed, we MUST trigger even if currently generating (cancel/overwrite conceptually)
              if (isGeneratingPreview[idx] && !promptChanged) return;
-
-             // Update Ref if changed to prevent loops
              if (currentPrompt) lastPromptsRef.current[idx] = currentPrompt;
 
              const prompt = currentPrompt!;
@@ -634,38 +589,20 @@ export const RemapperNode = memo(({ id, data }: NodeProps<PSDNodeData>) => {
                  try {
                      const apiKey = process.env.API_KEY;
                      if (!apiKey) return;
-                     
                      const ai = new GoogleGenAI({ apiKey });
-                     
-                     // Construct parts
                      const parts: any[] = [];
                      if (sourceRef) {
-                         const base64Data = sourceRef.includes('base64,') 
-                            ? sourceRef.split('base64,')[1] 
-                            : sourceRef;
-                            
-                         parts.push({
-                            inlineData: {
-                                mimeType: 'image/png',
-                                data: base64Data
-                            }
-                         });
+                         const base64Data = sourceRef.includes('base64,') ? sourceRef.split('base64,')[1] : sourceRef;
+                         parts.push({ inlineData: { mimeType: 'image/png', data: base64Data } });
                      }
                      parts.push({ text: prompt });
 
-                     // Use gemini-2.5-flash-image for fast drafts
                      const response = await ai.models.generateContent({
                         model: 'gemini-2.5-flash-image',
                         contents: { parts },
-                        config: {
-                             imageConfig: {
-                                // Request square aspect ratio for preview box usually
-                                aspectRatio: "1:1"
-                             }
-                        }
+                        config: { imageConfig: { aspectRatio: "1:1" } }
                      });
                      
-                     // Extract base64
                      let base64Data = null;
                      for (const part of response.candidates?.[0]?.content?.parts || []) {
                         if (part.inlineData) {
@@ -685,7 +622,6 @@ export const RemapperNode = memo(({ id, data }: NodeProps<PSDNodeData>) => {
                      setIsGeneratingPreview(prev => ({...prev, [idx]: false}));
                  }
              };
-             
              generateDraft();
         }
     });
@@ -693,27 +629,16 @@ export const RemapperNode = memo(({ id, data }: NodeProps<PSDNodeData>) => {
 
 
   const addInstance = useCallback(() => {
-    setNodes((nds) =>
-      nds.map((node) => {
+    setNodes((nds) => nds.map((node) => {
         if (node.id === id) {
-          return {
-            ...node,
-            data: {
-              ...node.data,
-              instanceCount: (node.data.instanceCount || 1) + 1,
-            },
-          };
+          return { ...node, data: { ...node.data, instanceCount: (node.data.instanceCount || 1) + 1 } };
         }
         return node;
-      })
-    );
+    }));
   }, [id, setNodes]);
 
   return (
-    // Removed overflow-hidden from root to prevent handle clipping
     <div className="min-w-[280px] bg-slate-800 rounded-lg shadow-xl border border-indigo-500/50 font-sans relative flex flex-col">
-      
-      {/* Header */}
       <div className="bg-indigo-900/80 p-2 border-b border-indigo-800 flex items-center justify-between shrink-0 rounded-t-lg">
          <div className="flex items-center space-x-2">
            <svg className="w-4 h-4 text-indigo-300" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -729,29 +654,24 @@ export const RemapperNode = memo(({ id, data }: NodeProps<PSDNodeData>) => {
          </div>
       </div>
 
-      {/* Instances List */}
       <div className="flex flex-col">
           {instances.map((instance) => {
-             // Determine if overlay should be shown
              const hasPreview = !!instance.payload?.previewUrl;
              const isAwaiting = instance.payload?.status === 'awaiting_confirmation';
-             
-             // Soft Lock Logic for UI
              const currentPrompt = instance.source.aiStrategy?.generativePrompt;
              const confirmedPrompt = confirmations[instance.index];
              const isConfirmed = !!currentPrompt && currentPrompt === confirmedPrompt;
              const refinementPending = !!confirmedPrompt && !!currentPrompt && confirmedPrompt !== currentPrompt;
-             
-             // Show overlay if we have a preview, OR if we are waiting for confirmation, 
-             // OR if we were confirmed but a refinement is now pending (effectively awaiting re-confirmation)
              const showOverlay = hasPreview || isAwaiting || refinementPending;
+
+             // Fetch History from Store Payload (not the recalculated instance payload)
+             const storePayload = payloadRegistry[id]?.[`result-out-${instance.index}`];
+             const history = storePayload?.history || [];
 
              return (
              <div key={instance.index} className="relative p-3 border-b border-slate-700/50 bg-slate-800 space-y-3 hover:bg-slate-700/20 transition-colors first:rounded-t-none">
                 
-                {/* Inputs Row */}
                 <div className="flex flex-col space-y-3">
-                   {/* Source Input Row */}
                    <div className="relative flex items-center justify-between group">
                       <div className="flex flex-col w-full">
                           <div className="flex items-center justify-between mb-0.5">
@@ -781,7 +701,6 @@ export const RemapperNode = memo(({ id, data }: NodeProps<PSDNodeData>) => {
                       </div>
                    </div>
 
-                   {/* Target Slot Row */}
                    <div className="relative flex items-center justify-between group">
                       <div className="flex flex-col w-full">
                           <div className="flex items-center justify-between mb-0.5">
@@ -812,7 +731,6 @@ export const RemapperNode = memo(({ id, data }: NodeProps<PSDNodeData>) => {
                    </div>
                 </div>
 
-                {/* Status Bar / Output */}
                 <div className="relative mt-2 pt-3 border-t border-slate-700/50 flex flex-col space-y-2">
                    {instance.payload ? (
                        <div className="flex flex-col w-full pr-4">
@@ -833,7 +751,6 @@ export const RemapperNode = memo(({ id, data }: NodeProps<PSDNodeData>) => {
                               <div className={`h-full ${instance.strategyUsed ? 'bg-pink-500' : 'bg-emerald-500'}`} style={{ width: '100%' }}></div>
                            </div>
                            
-                           {/* Confirmation & Ghost UI */}
                            {showOverlay && (
                                <div className="mt-2 p-2 bg-slate-900/50 border border-slate-700 rounded flex flex-col space-y-2">
                                    {isAwaiting && (
@@ -848,16 +765,15 @@ export const RemapperNode = memo(({ id, data }: NodeProps<PSDNodeData>) => {
                                        </div>
                                    )}
                                    
-                                   {/* Generative Preview Sandbox */}
                                    <GenerativePreviewOverlay 
                                        previewUrl={displayPreviews[instance.index] || instance.payload.previewUrl || previews[instance.index]}
+                                       history={history}
                                        isGenerating={!!isGeneratingPreview[instance.index]}
                                        scale={instance.payload.scaleFactor}
-                                       onConfirm={() => handleConfirmGeneration(instance.index, instance.source.aiStrategy?.generativePrompt || '')}
+                                       onConfirm={(url) => handleConfirmGeneration(instance.index, instance.source.aiStrategy?.generativePrompt || '', url)}
                                        userCredits={userCredits}
                                        canConfirm={isAwaiting || refinementPending}
                                        isConfirmed={isConfirmed}
-                                       // PRIORITIZE SOURCE-PROVIDED DIMENSIONS
                                        targetDimensions={instance.source.targetDimensions || instance.target.bounds}
                                        sourceReference={instance.payload.sourceReference}
                                        onImageLoad={() => handleImageLoad(instance.index)}
@@ -866,7 +782,6 @@ export const RemapperNode = memo(({ id, data }: NodeProps<PSDNodeData>) => {
                                </div>
                            )}
 
-                           {/* Credit Error UI (Explicit Intent Failure) */}
                            {instance.payload.status === 'error' && (
                                <div className="mt-2 p-2 bg-red-900/30 border border-red-700/50 rounded flex flex-col space-y-1">
                                     <span className="text-[9px] text-red-200 font-bold uppercase">

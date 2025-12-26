@@ -220,7 +220,6 @@ export const ExportPSDNode = memo(({ id }: NodeProps) => {
         width: templateMetadata.canvas.width,
         height: templateMetadata.canvas.height,
         children: [],
-        canvasState: undefined // Clear source canvas state if any
       };
 
       // B. Synthesis Phase: Pre-generate all AI assets
