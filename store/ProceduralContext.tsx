@@ -20,10 +20,6 @@ interface ProceduralState {
 
   // Global counter to force re-evaluation of downstream nodes upon binary re-hydration
   globalVersion: number;
-
-  // Credit Management
-  userCredits: number;
-  isPro: boolean;
 }
 
 interface ProceduralContextType extends ProceduralState {
@@ -35,12 +31,6 @@ interface ProceduralContextType extends ProceduralState {
   updatePreview: (nodeId: string, handleId: string, url: string) => void; // New method for AI Ghosts
   unregisterNode: (nodeId: string) => void;
   triggerGlobalRefresh: () => void;
-  
-  // Credit Actions
-  consumeCredit: (amount: number) => boolean;
-  addCredits: (amount: number) => void;
-  setCredits: (amount: number) => void; // New method for restoration
-  setProStatus: (status: boolean) => void;
 }
 
 const ProceduralContext = createContext<ProceduralContextType | null>(null);
@@ -52,10 +42,6 @@ export const ProceduralStoreProvider: React.FC<{ children: React.ReactNode }> = 
   const [payloadRegistry, setPayloadRegistry] = useState<Record<string, Record<string, TransformedPayload>>>({});
   const [analysisRegistry, setAnalysisRegistry] = useState<Record<string, Record<string, LayoutStrategy>>>({});
   const [globalVersion, setGlobalVersion] = useState<number>(0);
-
-  // Credit State
-  const [userCredits, setUserCredits] = useState<number>(5);
-  const [isPro, setIsPro] = useState<boolean>(false);
 
   const registerPsd = useCallback((nodeId: string, psd: Psd) => {
     setPsdRegistry(prev => ({ ...prev, [nodeId]: psd }));
@@ -229,27 +215,6 @@ export const ProceduralStoreProvider: React.FC<{ children: React.ReactNode }> = 
     setGlobalVersion(v => v + 1);
   }, []);
 
-  // Credit Logic
-  const consumeCredit = useCallback((amount: number): boolean => {
-    if (userCredits >= amount) {
-        setUserCredits(prev => prev - amount);
-        return true;
-    }
-    return false;
-  }, [userCredits]);
-
-  const addCredits = useCallback((amount: number) => {
-    setUserCredits(prev => prev + amount);
-  }, []);
-
-  const setCredits = useCallback((amount: number) => {
-    setUserCredits(amount);
-  }, []);
-
-  const setProStatus = useCallback((status: boolean) => {
-    setIsPro(status);
-  }, []);
-
   const value = useMemo(() => ({
     psdRegistry,
     templateRegistry,
@@ -257,8 +222,6 @@ export const ProceduralStoreProvider: React.FC<{ children: React.ReactNode }> = 
     payloadRegistry,
     analysisRegistry,
     globalVersion,
-    userCredits,
-    isPro,
     registerPsd,
     registerTemplate,
     registerResolved,
@@ -266,16 +229,11 @@ export const ProceduralStoreProvider: React.FC<{ children: React.ReactNode }> = 
     registerAnalysis,
     updatePreview,
     unregisterNode,
-    triggerGlobalRefresh,
-    consumeCredit,
-    addCredits,
-    setCredits,
-    setProStatus
+    triggerGlobalRefresh
   }), [
     psdRegistry, templateRegistry, resolvedRegistry, payloadRegistry, analysisRegistry, globalVersion,
-    userCredits, isPro,
     registerPsd, registerTemplate, registerResolved, registerPayload, registerAnalysis, updatePreview,
-    unregisterNode, triggerGlobalRefresh, consumeCredit, addCredits, setCredits, setProStatus
+    unregisterNode, triggerGlobalRefresh
   ]);
 
   return (

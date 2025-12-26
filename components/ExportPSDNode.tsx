@@ -145,7 +145,7 @@ export const ExportPSDNode = memo(({ id }: NodeProps) => {
   const edges = useEdges();
   
   // Access global registries for binary data (Original PSDs) and Payload Data
-  const { psdRegistry, templateRegistry, payloadRegistry, consumeCredit } = useProceduralStore();
+  const { psdRegistry, templateRegistry, payloadRegistry } = useProceduralStore();
 
   // 1. Resolve Connected Target Template from Store via Edge Source
   const templateMetadata = useMemo(() => {
@@ -184,7 +184,7 @@ export const ExportPSDNode = memo(({ id }: NodeProps) => {
              
              // Check for upstream errors blocking export
              if (payload.status === 'error') {
-                 errors.push(`Slot '${slotName}': Upstream generation error (Check credits).`);
+                 errors.push(`Slot '${slotName}': Upstream generation error.`);
              }
          } else {
              // FALLBACK: Mismatch detected - Strictly enforce procedural integrity
@@ -241,11 +241,6 @@ export const ExportPSDNode = memo(({ id }: NodeProps) => {
               const findGenerativeLayers = (layers: TransformedLayer[]) => {
                   for (const layer of layers) {
                       if (layer.type === 'generative' && layer.generativePrompt) {
-                          // CREDIT CONSUMPTION CHECK
-                          if (!consumeCredit(1)) {
-                              throw new Error("Insufficient Credits. Please add more credits to proceed with generative export.");
-                          }
-
                           // Create task
                           const task = async () => {
                               const canvas = await generateLayerImage(

@@ -3,7 +3,7 @@ import { Handle, Position, NodeProps, useEdges, useReactFlow, useNodes } from 'r
 import { PSDNodeData, SerializableLayer, TransformedPayload, TransformedLayer, MAX_BOUNDARY_VIOLATION_PERCENT, LayoutStrategy } from '../types';
 import { useProceduralStore } from '../store/ProceduralContext';
 import { GoogleGenAI } from "@google/genai";
-import { ChevronLeft, ChevronRight, History as HistoryIcon } from 'lucide-react';
+import { ChevronLeft, ChevronRight, History as HistoryIcon, Check, RotateCcw, RefreshCw } from 'lucide-react';
 
 interface InstanceData {
   index: number;
@@ -34,7 +34,6 @@ interface OverlayProps {
     isGenerating: boolean;
     scale: number;
     onConfirm: (url?: string) => void;
-    userCredits: number;
     canConfirm: boolean;
     isConfirmed: boolean;
     targetDimensions?: { w: number, h: number };
@@ -49,7 +48,6 @@ const GenerativePreviewOverlay = ({
     isGenerating,
     scale,
     onConfirm,
-    userCredits,
     canConfirm,
     isConfirmed,
     targetDimensions,
@@ -138,7 +136,7 @@ const GenerativePreviewOverlay = ({
                         className={`w-full h-full object-cover transition-all duration-700 
                             ${isConfirmed 
                                 ? 'opacity-100 grayscale-0 mix-blend-normal' 
-                                : 'opacity-40 grayscale-[0.2] mix-blend-screen animate-pulse'
+                                : 'opacity-90 grayscale-0 mix-blend-normal'
                             }`}
                      />
                  ) : (
@@ -156,27 +154,28 @@ const GenerativePreviewOverlay = ({
                      </div>
                  )}
 
-                 {/* 3. Button Overlay - Only if waiting for confirmation OR if reviewing history */}
-                 {/* We allow confirming historical items to restore them */}
-                 {displayUrl && (
-                     <div className={`absolute inset-0 z-30 flex items-center justify-center bg-black/30 backdrop-blur-[1px] transition-opacity duration-300 ${!canConfirm && isLatest ? 'opacity-0 group-hover:opacity-100' : 'opacity-100'}`}>
-                        {(canConfirm || !isLatest || !isConfirmed) && (
-                         userCredits > 0 ? (
-                             <button 
-                                onClick={(e) => { e.stopPropagation(); onConfirm(displayUrl); }}
-                                className="bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white py-2 px-4 rounded shadow-[0_0_15px_rgba(168,85,247,0.5)] border border-white/20 transform hover:scale-105 transition-all flex flex-col items-center"
-                             >
-                                <span className="text-[10px] font-bold uppercase tracking-wider">
-                                    {!isLatest ? 'Restore Version' : refinementPending ? 'Update Generation' : 'Confirm Generation'}
-                                </span>
-                                <span className="text-[8px] opacity-90 font-mono mt-0.5">1 Credit Cost</span>
-                             </button>
-                         ) : (
-                             <div className="bg-red-900/90 border border-red-500 text-red-100 px-3 py-2 rounded text-[10px] font-bold uppercase tracking-wider shadow-lg backdrop-blur-md">
-                                 Insufficient Credits
-                             </div>
-                         )
-                        )}
+                 {/* 3. Action FAB - High Fidelity Evaluation Mode */}
+                 {displayUrl && (canConfirm || !isLatest || !isConfirmed) && (
+                     <div className={`absolute bottom-2 right-2 z-30 transition-opacity duration-300 ${!canConfirm && isLatest ? 'opacity-0 group-hover:opacity-100' : 'opacity-100'}`}>
+                         <button 
+                            onClick={(e) => { e.stopPropagation(); onConfirm(displayUrl); }}
+                            className={`group flex items-center justify-center w-8 h-8 rounded-full shadow-[0_4px_12px_rgba(0,0,0,0.5)] border border-white/20 backdrop-blur-sm transition-all duration-200 transform hover:scale-110 active:scale-95
+                                ${!isLatest 
+                                    ? 'bg-amber-600 hover:bg-amber-500' // Restore
+                                    : refinementPending 
+                                        ? 'bg-indigo-600 hover:bg-indigo-500' // Update
+                                        : 'bg-emerald-500 hover:bg-emerald-400' // Confirm
+                                }`}
+                            title={!isLatest ? 'Restore Version' : refinementPending ? 'Update Generation' : 'Confirm Generation'}
+                         >
+                            {!isLatest ? (
+                                <RotateCcw size={14} className="text-white" />
+                            ) : refinementPending ? (
+                                <RefreshCw size={14} className="text-white" />
+                            ) : (
+                                <Check size={16} strokeWidth={3} className="text-white" />
+                            )}
+                         </button>
                      </div>
                  )}
 
@@ -265,7 +264,7 @@ export const RemapperNode = memo(({ id, data }: NodeProps<PSDNodeData>) => {
   const nodes = useNodes();
   
   // Consume data from Store
-  const { templateRegistry, resolvedRegistry, payloadRegistry, registerPayload, unregisterNode, userCredits } = useProceduralStore();
+  const { templateRegistry, resolvedRegistry, payloadRegistry, registerPayload, unregisterNode } = useProceduralStore();
 
   // Cleanup
   useEffect(() => {
@@ -444,8 +443,8 @@ export const RemapperNode = memo(({ id, data }: NodeProps<PSDNodeData>) => {
                 const scaleThreshold = 2.0;
                 const isExplicit = sourceData.aiStrategy!.isExplicitIntent;
                 const isHighStretch = scale > scaleThreshold;
-                const hasCredits = userCredits > 0;
-                if (isConfirmed && hasCredits) {
+                
+                if (isConfirmed) {
                     requiresGeneration = true;
                     generativePromptUsed = currentPrompt;
                     status = 'success';
@@ -493,7 +492,7 @@ export const RemapperNode = memo(({ id, data }: NodeProps<PSDNodeData>) => {
     }
 
     return result;
-  }, [instanceCount, edges, id, resolvedRegistry, templateRegistry, nodes, confirmations, userCredits, previews]);
+  }, [instanceCount, edges, id, resolvedRegistry, templateRegistry, nodes, confirmations, previews]);
 
 
   // Sync Payloads to Store
@@ -648,9 +647,6 @@ export const RemapperNode = memo(({ id, data }: NodeProps<PSDNodeData>) => {
          </div>
          <div className="flex flex-col items-end">
              <span className="text-[10px] text-indigo-400/70 font-mono">TRANSFORMER</span>
-             <span className={`text-[9px] font-bold ${userCredits > 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                 {userCredits} Credits
-             </span>
          </div>
       </div>
 
@@ -771,7 +767,6 @@ export const RemapperNode = memo(({ id, data }: NodeProps<PSDNodeData>) => {
                                        isGenerating={!!isGeneratingPreview[instance.index]}
                                        scale={instance.payload.scaleFactor}
                                        onConfirm={(url) => handleConfirmGeneration(instance.index, instance.source.aiStrategy?.generativePrompt || '', url)}
-                                       userCredits={userCredits}
                                        canConfirm={isAwaiting || refinementPending}
                                        isConfirmed={isConfirmed}
                                        targetDimensions={instance.source.targetDimensions || instance.target.bounds}
@@ -779,17 +774,6 @@ export const RemapperNode = memo(({ id, data }: NodeProps<PSDNodeData>) => {
                                        onImageLoad={() => handleImageLoad(instance.index)}
                                        refinementPending={refinementPending}
                                    />
-                               </div>
-                           )}
-
-                           {instance.payload.status === 'error' && (
-                               <div className="mt-2 p-2 bg-red-900/30 border border-red-700/50 rounded flex flex-col space-y-1">
-                                    <span className="text-[9px] text-red-200 font-bold uppercase">
-                                        Insufficient Credits
-                                    </span>
-                                    <span className="text-[9px] text-red-300">
-                                        Generative fill required but wallet is empty.
-                                    </span>
                                </div>
                            )}
                        </div>

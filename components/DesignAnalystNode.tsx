@@ -279,7 +279,7 @@ export const DesignAnalystNode = memo(({ id, data }: NodeProps<PSDNodeData>) => 
   const { setNodes } = useReactFlow();
   const updateNodeInternals = useUpdateNodeInternals();
   
-  const { resolvedRegistry, templateRegistry, registerResolved, registerTemplate, unregisterNode, userCredits, psdRegistry } = useProceduralStore();
+  const { resolvedRegistry, templateRegistry, registerResolved, registerTemplate, unregisterNode, psdRegistry } = useProceduralStore();
 
   useEffect(() => {
     return () => unregisterNode(id);
@@ -500,7 +500,7 @@ export const DesignAnalystNode = memo(({ id, data }: NodeProps<PSDNodeData>) => 
      }
   };
 
-  const generateSystemInstruction = (sourceData: any, targetData: any, isRefining: boolean, credits: number) => {
+  const generateSystemInstruction = (sourceData: any, targetData: any, isRefining: boolean) => {
     const sourceW = sourceData.container.bounds.w;
     const sourceH = sourceData.container.bounds.h;
     const targetW = targetData.bounds.w;
@@ -533,7 +533,6 @@ export const DesignAnalystNode = memo(({ id, data }: NodeProps<PSDNodeData>) => 
         CONTAINER CONTEXT:
         - Source: ${sourceData.container.containerName} (${sourceW}x${sourceH})
         - Target: ${targetData.name} (${targetW}x${targetH})
-        - Current User Balance: ${credits} Credits.
         
         LAYER HIERARCHY (JSON):
         ${JSON.stringify(layerAnalysisData.slice(0, 40))} ... (Truncated)
@@ -551,10 +550,6 @@ export const DesignAnalystNode = memo(({ id, data }: NodeProps<PSDNodeData>) => 
           IF GENERATIVE IS SELECTED:
           - Set 'generativePrompt' to: "Generate a high-fidelity expansion. Use the attached sourceReference for style, lighting, and texture matching. Do not deviate from the original aesthetic."
         - METHOD 'HYBRID': Use geometric layout for main elements but generate background fill.
-        
-        CREDIT AWARENESS:
-        - If balance is 0, DO NOT suggest GENERATIVE methods. Pivot strictly to GEOMETRIC scaling or STRETCH anchors, even if aspect ratio mismatches are severe.
-        - If you perform this forced pivot, you MUST mention "Geometric Pivot due to zero balance" in your 'reasoning' field.
         
         PIVOT PROTOCOL (Geometric Reset):
         If the user requests to "undo generation", "reset", "use original pixels", "stop generating", or if the strategy is GEOMETRIC:
@@ -592,7 +587,7 @@ export const DesignAnalystNode = memo(({ id, data }: NodeProps<PSDNodeData>) => 
         if (!apiKey) throw new Error("API_KEY missing");
 
         const ai = new GoogleGenAI({ apiKey });
-        const systemInstruction = generateSystemInstruction(sourceData, targetData, history.length > 1, userCredits);
+        const systemInstruction = generateSystemInstruction(sourceData, targetData, history.length > 1);
         const contents = history.map(msg => ({ role: msg.role, parts: msg.parts }));
 
         const requestConfig: any = {
@@ -698,7 +693,7 @@ export const DesignAnalystNode = memo(({ id, data }: NodeProps<PSDNodeData>) => 
                  const url = await generateDraft(json.generativePrompt, json.sourceReference);
                  
                  if (url) {
-                     console.log("PREVIEW_GENERATED: 0 Credits Consumed");
+                     console.log("PREVIEW_GENERATED");
                      const contextWithPreview: MappingContext = {
                          ...augmentedContext,
                          previewUrl: url,

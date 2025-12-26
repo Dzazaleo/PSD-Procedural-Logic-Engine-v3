@@ -214,9 +214,6 @@ export interface ProjectExport {
   nodes: Node<PSDNodeData>[];
   edges: Edge[];
   viewport: { x: number, y: number, zoom: number };
-  // Credit Management
-  userCredits: number;
-  isPro: boolean;
 }
 
 // Re-export Psd type for convenience in other files
