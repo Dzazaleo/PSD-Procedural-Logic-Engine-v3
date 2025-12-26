@@ -693,37 +693,41 @@ export const DesignAnalystNode = memo(({ id, data }: NodeProps<PSDNodeData>) => 
 
         const isExplicitIntent = history.some(msg => msg.role === 'user' && /\b(generate|recreate|nano banana)\b/i.test(msg.parts[0].text));
 
-        // Determine Preview Logic based on deduplication
-        // Retrieval of current URL from registry to preserve it if prompt is identical
-        const currentRegistryEntry = resolvedRegistry[id]?.[`source-out-${index}`];
-        const preservedUrl = isPromptIdentical ? currentRegistryEntry?.previewUrl : undefined;
+        // --- STATE SAFETY REFACTOR ---
 
+        // 1. Retrieve current URL (if any) to preserve visual stability by default
+        const currentRegistryEntry = resolvedRegistry[id]?.[`source-out-${index}`];
+        const existingPreviewUrl = currentRegistryEntry?.previewUrl;
+
+        // 2. Define Context with NEW Strategy but OLD Preview
+        // This ensures that if we DON'T generate (due to deduplication), the old ghost remains.
         const augmentedContext: MappingContext = {
             ...sourceData,
             aiStrategy: {
                 ...json,
                 isExplicitIntent
             },
-            // CRITICAL: Explicitly clear previewUrl if prompt changed to prevent "Stale Ghost".
-            // If prompt is identical, we try to preserve the old one.
-            previewUrl: preservedUrl, 
+            previewUrl: existingPreviewUrl, 
             targetDimensions: targetData ? { w: targetData.bounds.w, h: targetData.bounds.h } : undefined
         };
         
-        // 1. Force update the registry
+        // 3. Commit Strategy to Store (First Pass)
+        // If method is GEOMETRIC, the store logic will strip the previewUrl automatically.
         registerResolved(id, `source-out-${index}`, augmentedContext);
 
-        // 2. Conditional Draft Generation (Debounced & Versioned)
-        // Only generate if:
-        // A) Method allows it
-        // B) Prompt exists
-        // C) Prompt CHANGED (Checksum mismatch) OR we don't have a preserved URL
+        // 4. Deduplication & Generation Gate
+        // We only generate if the prompt has changed OR if we don't have a preview yet.
         const shouldGenerate = (json.method === 'GENERATIVE' || json.method === 'HYBRID') && 
                                json.generativePrompt && 
-                               (!isPromptIdentical || !preservedUrl);
+                               (!isPromptIdentical || !existingPreviewUrl);
 
         if (shouldGenerate) {
-             // Clear existing timeout to prevent rapid-fire API calls
+             // 5. Conditional Clearing: Only NOW do we clear the preview to show loading
+             // This prevents "soft-locking" if we exited early or skipped generation.
+             const loadingContext = { ...augmentedContext, previewUrl: undefined };
+             registerResolved(id, `source-out-${index}`, loadingContext);
+
+             // Clear existing timeout
              if (draftTimeoutRef.current) clearTimeout(draftTimeoutRef.current);
 
              draftTimeoutRef.current = setTimeout(async () => {
@@ -737,7 +741,6 @@ export const DesignAnalystNode = memo(({ id, data }: NodeProps<PSDNodeData>) => 
                          previewUrl: url,
                          message: "Free Preview: Draft"
                      };
-                     // 3. Update registry with the new preview URL
                      registerResolved(id, `source-out-${index}`, contextWithPreview);
                  }
              }, 500); // 500ms debounce
