@@ -1,9 +1,10 @@
 import React, { memo, useState, useEffect, useMemo, useCallback, useRef } from 'react';
-import { Handle, Position, NodeProps, useEdges, NodeResizer, useReactFlow, useUpdateNodeInternals } from 'reactflow';
+import { Handle, Position, NodeProps, useEdges, NodeResizer, useReactFlow, useUpdateNodeInternals, useNodes } from 'reactflow';
 import { PSDNodeData, LayoutStrategy, SerializableLayer, ChatMessage, AnalystInstanceState, ContainerContext, TemplateMetadata, ContainerDefinition, MappingContext } from '../types';
 import { useProceduralStore } from '../store/ProceduralContext';
-import { getSemanticThemeObject } from '../services/psdService';
+import { getSemanticThemeObject, findLayerByPath } from '../services/psdService';
 import { GoogleGenAI, Type } from "@google/genai";
+import { Psd } from 'ag-psd';
 
 // Define the exact union type for model keys to match PSDNodeData
 type ModelKey = 'gemini-3-flash' | 'gemini-3-pro' | 'gemini-3-pro-thinking';
@@ -67,6 +68,11 @@ const StrategyCard: React.FC<{ strategy: LayoutStrategy, modelConfig: ModelConfi
                         CLEARANCE
                     </span>
                 )}
+                {strategy.sourceReference && (
+                     <span className="text-[9px] px-1.5 py-0.5 rounded border border-blue-500 text-blue-300 bg-blue-900/20 font-mono font-bold" title="Source Pixels Attached">
+                        REF ATTACHED
+                     </span>
+                )}
              </div>
              
              <div className="grid grid-cols-2 gap-4 mt-1">
@@ -129,29 +135,18 @@ const InstanceRow: React.FC<InstanceRowProps> = ({
         }
     }, [state.chatHistory.length, isAnalyzing]);
 
-    // Native Wheel Isolation: Prevents scroll events from bubbling to ReactFlow (Zoom)
+    // Native Wheel Isolation
     useEffect(() => {
         const container = chatContainerRef.current;
         if (!container) return;
-
-        const handleWheel = (e: WheelEvent) => {
-            e.stopPropagation();
-        };
-
-        // Passive: false allows us to control the event, though stopPropagation works regardless
+        const handleWheel = (e: WheelEvent) => { e.stopPropagation(); };
         container.addEventListener('wheel', handleWheel, { passive: false });
-
-        return () => {
-            container.removeEventListener('wheel', handleWheel);
-        };
+        return () => { container.removeEventListener('wheel', handleWheel); };
     }, []);
 
     const activeModelConfig = MODELS[state.selectedModel];
     const isReady = !!sourceData && !!targetData;
-    
-    // Theme derivation for UI coloring
     const targetName = targetData?.name || (sourceData?.container.containerName) || 'Unknown';
-    // Use procedural palette but darken slightly for background usage
     const theme = getSemanticThemeObject(targetName, index);
 
     const handleRefineClick = (e: React.MouseEvent) => {
@@ -166,16 +161,10 @@ const InstanceRow: React.FC<InstanceRowProps> = ({
         const ratio = w / h;
         let styleW = maxDim;
         let styleH = maxDim;
-        
         if (ratio > 1) { styleH = maxDim / ratio; }
         else { styleW = maxDim * ratio; }
-   
-        return {
-            width: `${styleW}px`,
-            height: `${styleH}px`,
-            borderColor: color
-        };
-     };
+        return { width: `${styleW}px`, height: `${styleH}px`, borderColor: color };
+    };
 
     return (
         <div className={`relative border-b border-slate-700/50 bg-slate-800/30 first:border-t-0 ${compactMode ? 'py-2' : ''}`}>
@@ -212,175 +201,64 @@ const InstanceRow: React.FC<InstanceRowProps> = ({
                     
                     {/* Left Inputs (Source + Target) */}
                     <div className="flex flex-col gap-4 relative justify-center h-full">
-                         {/* SOURCE INPUT */}
                          <div className="relative flex items-center group h-4">
-                            <Handle 
-                                type="target" 
-                                position={Position.Left} 
-                                id={`source-in-${index}`} 
-                                className="!absolute !-left-7 !w-3 !h-3 !rounded-full !bg-indigo-500 !border-2 !border-slate-800 z-50 transition-transform hover:scale-125"
-                                style={{ top: '50%', transform: 'translate(-50%, -50%)' }}
-                                title="Input: Source Context"
-                            />
-                            <span className={`text-[9px] font-mono font-bold leading-none ${sourceData ? 'text-indigo-300' : 'text-slate-600'} ml-1`}>
-                                SRC
-                            </span>
+                            <Handle type="target" position={Position.Left} id={`source-in-${index}`} className="!absolute !-left-7 !w-3 !h-3 !rounded-full !bg-indigo-500 !border-2 !border-slate-800 z-50 transition-transform hover:scale-125" style={{ top: '50%', transform: 'translate(-50%, -50%)' }} title="Input: Source Context" />
+                            <span className={`text-[9px] font-mono font-bold leading-none ${sourceData ? 'text-indigo-300' : 'text-slate-600'} ml-1`}>SRC</span>
                          </div>
-                         
-                         {/* TARGET INPUT */}
                          <div className="relative flex items-center group h-4">
-                            <Handle 
-                                type="target" 
-                                position={Position.Left} 
-                                id={`target-in-${index}`} 
-                                className="!absolute !-left-7 !w-3 !h-3 !rounded-full !bg-emerald-500 !border-2 !border-slate-800 z-50 transition-transform hover:scale-125"
-                                style={{ top: '50%', transform: 'translate(-50%, -50%)' }}
-                                title="Input: Target Definition"
-                            />
-                            <span className={`text-[9px] font-mono font-bold leading-none ${targetData ? 'text-emerald-300' : 'text-slate-600'} ml-1`}>
-                                TGT
-                            </span>
+                            <Handle type="target" position={Position.Left} id={`target-in-${index}`} className="!absolute !-left-7 !w-3 !h-3 !rounded-full !bg-emerald-500 !border-2 !border-slate-800 z-50 transition-transform hover:scale-125" style={{ top: '50%', transform: 'translate(-50%, -50%)' }} title="Input: Target Definition" />
+                            <span className={`text-[9px] font-mono font-bold leading-none ${targetData ? 'text-emerald-300' : 'text-slate-600'} ml-1`}>TGT</span>
                          </div>
                     </div>
 
                     {/* Center Preview */}
                     <div className="flex items-center justify-center space-x-3 mx-4 border-x border-slate-700/20 px-4 flex-1">
-                        {/* Source Preview */}
                         <div className="flex flex-col items-center gap-1">
-                            <div className="border-2 border-dashed flex items-center justify-center bg-indigo-500/10 transition-all duration-300" 
-                                    style={sourceData ? getPreviewStyle(sourceData.container.bounds.w, sourceData.container.bounds.h, '#6366f1') : { width: 24, height: 24, borderColor: '#334155' }}>
-                            </div>
-                            {sourceData && (
-                                <span className="text-[8px] font-mono text-slate-500 leading-none">
-                                    {Math.round(sourceData.container.bounds.w)}x{Math.round(sourceData.container.bounds.h)}
-                                </span>
-                            )}
+                            <div className="border-2 border-dashed flex items-center justify-center bg-indigo-500/10 transition-all duration-300" style={sourceData ? getPreviewStyle(sourceData.container.bounds.w, sourceData.container.bounds.h, '#6366f1') : { width: 24, height: 24, borderColor: '#334155' }}></div>
+                            {sourceData && (<span className="text-[8px] font-mono text-slate-500 leading-none">{Math.round(sourceData.container.bounds.w)}x{Math.round(sourceData.container.bounds.h)}</span>)}
                         </div>
-
-                        {/* Arrow */}
-                        <div className="">
-                            <svg className="w-3 h-3 text-slate-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M14 5l7 7m0 0l-7 7m7-7H3" />
-                            </svg>
-                        </div>
-                        
-                        {/* Target Preview */}
+                        <div className=""><svg className="w-3 h-3 text-slate-600" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M14 5l7 7m0 0l-7 7m7-7H3" /></svg></div>
                         <div className="flex flex-col items-center gap-1">
-                            <div className="border-2 border-dashed flex items-center justify-center bg-emerald-500/10 transition-all duration-300" 
-                                    style={targetData ? getPreviewStyle(targetData.bounds.w, targetData.bounds.h, '#10b981') : { width: 24, height: 24, borderColor: '#334155' }}>
-                            </div>
-                             {targetData && (
-                                <span className="text-[8px] font-mono text-slate-500 leading-none">
-                                    {Math.round(targetData.bounds.w)}x{Math.round(targetData.bounds.h)}
-                                </span>
-                            )}
+                            <div className="border-2 border-dashed flex items-center justify-center bg-emerald-500/10 transition-all duration-300" style={targetData ? getPreviewStyle(targetData.bounds.w, targetData.bounds.h, '#10b981') : { width: 24, height: 24, borderColor: '#334155' }}></div>
+                             {targetData && (<span className="text-[8px] font-mono text-slate-500 leading-none">{Math.round(targetData.bounds.w)}x{Math.round(targetData.bounds.h)}</span>)}
                         </div>
                     </div>
 
                     {/* Right Outputs (Source Relay, Target Relay) */}
                     <div className="flex flex-col gap-4 items-end relative justify-center h-full">
-                        {/* SOURCE RELAY */}
                         <div className="relative flex items-center justify-end group h-4">
                             <span className="text-[9px] font-mono font-bold leading-none text-slate-500 mr-1">SOURCE</span>
-                            <Handle 
-                                type="source" 
-                                position={Position.Right} 
-                                id={`source-out-${index}`} 
-                                className="!absolute !-right-7 !w-3 !h-3 !rounded-full !bg-indigo-500 !border-2 !border-white z-50 transition-transform hover:scale-125" 
-                                style={{ top: '50%', transform: 'translate(50%, -50%)' }}
-                                title="Relay: Source Data + AI Strategy"
-                            />
+                            <Handle type="source" position={Position.Right} id={`source-out-${index}`} className="!absolute !-right-7 !w-3 !h-3 !rounded-full !bg-indigo-500 !border-2 !border-white z-50 transition-transform hover:scale-125" style={{ top: '50%', transform: 'translate(50%, -50%)' }} title="Relay: Source Data + AI Strategy" />
                         </div>
-
-                        {/* TARGET RELAY */}
                         <div className="relative flex items-center justify-end group h-4">
                             <span className="text-[9px] font-mono font-bold leading-none text-slate-500 mr-1">TARGET</span>
-                            <Handle 
-                                type="source" 
-                                position={Position.Right} 
-                                id={`target-out-${index}`} 
-                                className="!absolute !-right-7 !w-3 !h-3 !rounded-full !bg-emerald-500 !border-2 !border-white z-50 transition-transform hover:scale-125" 
-                                style={{ top: '50%', transform: 'translate(50%, -50%)' }}
-                                title="Relay: Target Definition"
-                            />
+                            <Handle type="source" position={Position.Right} id={`target-out-${index}`} className="!absolute !-right-7 !w-3 !h-3 !rounded-full !bg-emerald-500 !border-2 !border-white z-50 transition-transform hover:scale-125" style={{ top: '50%', transform: 'translate(50%, -50%)' }} title="Relay: Target Definition" />
                         </div>
                     </div>
                 </div>
 
                 {/* Chat Console - EXPANDED & EVENT ISOLATED */}
-                <div 
-                    ref={chatContainerRef}
-                    className={`nodrag nopan ${compactMode ? 'h-48' : 'h-64'} overflow-y-auto border border-slate-700 bg-slate-900 rounded p-3 space-y-3 custom-scrollbar transition-all shadow-inner cursor-auto`}
-                    onMouseDown={(e) => e.stopPropagation()} 
-                >
+                <div ref={chatContainerRef} className={`nodrag nopan ${compactMode ? 'h-48' : 'h-64'} overflow-y-auto border border-slate-700 bg-slate-900 rounded p-3 space-y-3 custom-scrollbar transition-all shadow-inner cursor-auto`} onMouseDown={(e) => e.stopPropagation()}>
                     {state.chatHistory.length === 0 && (
-                        <div className="h-full flex flex-col items-center justify-center text-slate-600 italic text-xs opacity-50">
-                            <span>Ready to analyze {targetData?.name || 'slot'}</span>
-                        </div>
+                        <div className="h-full flex flex-col items-center justify-center text-slate-600 italic text-xs opacity-50"><span>Ready to analyze {targetData?.name || 'slot'}</span></div>
                     )}
                     {state.chatHistory.map((msg, idx) => (
                         <div key={msg.id || idx} className={`flex flex-col ${msg.role === 'user' ? 'items-end' : 'items-start'}`}>
-                            <div className={`max-w-[95%] rounded border p-2 text-xs leading-relaxed shadow-sm
-                                ${msg.role === 'user' 
-                                     ? 'bg-slate-800 border-slate-600 text-slate-200' 
-                                     : `bg-slate-800/50 ${activeModelConfig.badgeClass.replace('bg-', 'border-').split(' ')[0]} text-slate-300`
-                                }`}
-                            >
-                                {msg.parts?.[0]?.text && msg.role === 'user' && (
-                                    <div className="whitespace-pre-wrap break-words">{msg.parts[0].text}</div>
-                                )}
-                                {msg.strategySnapshot && (
-                                    <div className="mt-1">
-                                        <StrategyCard strategy={msg.strategySnapshot} modelConfig={activeModelConfig} />
-                                    </div>
-                                )}
+                            <div className={`max-w-[95%] rounded border p-2 text-xs leading-relaxed shadow-sm ${msg.role === 'user' ? 'bg-slate-800 border-slate-600 text-slate-200' : `bg-slate-800/50 ${activeModelConfig.badgeClass.replace('bg-', 'border-').split(' ')[0]} text-slate-300`}`}>
+                                {msg.parts?.[0]?.text && msg.role === 'user' && (<div className="whitespace-pre-wrap break-words">{msg.parts[0].text}</div>)}
+                                {msg.strategySnapshot && (<div className="mt-1"><StrategyCard strategy={msg.strategySnapshot} modelConfig={activeModelConfig} /></div>)}
                             </div>
                         </div>
                     ))}
-                    {isAnalyzing && (
-                        <div className="flex items-center space-x-2 text-xs text-slate-400 animate-pulse pl-1">
-                            <div className="w-1.5 h-1.5 bg-slate-400 rounded-full animate-bounce"></div>
-                            <span>Analyst is thinking...</span>
-                        </div>
-                    )}
+                    {isAnalyzing && (<div className="flex items-center space-x-2 text-xs text-slate-400 animate-pulse pl-1"><div className="w-1.5 h-1.5 bg-slate-400 rounded-full animate-bounce"></div><span>Analyst is thinking...</span></div>)}
                 </div>
 
-                {/* Control Footer - REORGANIZED for Wider Layout */}
+                {/* Control Footer */}
                 <div className="flex items-center space-x-2 pt-2 border-t border-slate-700/30">
-                     <textarea
-                        value={inputText}
-                        onChange={(e) => setInputText(e.target.value)}
-                        onWheel={(e) => e.stopPropagation()}
-                        onMouseDown={(e) => e.stopPropagation()}
-                        placeholder="Refinement instructions..."
-                        disabled={!isReady || isAnalyzing}
-                        className="nodrag nopan flex-1 bg-slate-900 border border-slate-700 rounded p-2 text-xs text-slate-200 focus:outline-none focus:border-indigo-500 resize-none h-10 transition-colors"
-                     />
+                     <textarea value={inputText} onChange={(e) => setInputText(e.target.value)} onWheel={(e) => e.stopPropagation()} onMouseDown={(e) => e.stopPropagation()} placeholder="Refinement instructions..." disabled={!isReady || isAnalyzing} className="nodrag nopan flex-1 bg-slate-900 border border-slate-700 rounded p-2 text-xs text-slate-200 focus:outline-none focus:border-indigo-500 resize-none h-10 transition-colors" />
                      <div className="flex space-x-2">
-                        <button
-                            onClick={(e) => { e.stopPropagation(); onAnalyze(index); }}
-                            onMouseDown={(e) => e.stopPropagation()}
-                            disabled={!isReady || isAnalyzing}
-                            className={`nodrag nopan h-10 px-4 rounded text-[10px] font-bold uppercase transition-all shadow-sm flex items-center justify-center
-                                ${isReady && !isAnalyzing 
-                                    ? 'bg-slate-700 hover:bg-slate-600 text-white border border-slate-600'
-                                    : 'bg-slate-800 text-slate-600 cursor-not-allowed border border-slate-700'
-                                }`}
-                        >
-                            Analyze
-                        </button>
-                        <button
-                            onClick={handleRefineClick}
-                            onMouseDown={(e) => e.stopPropagation()}
-                            disabled={!isReady || isAnalyzing || inputText.trim().length === 0}
-                            className={`nodrag nopan h-10 px-4 rounded text-[10px] font-bold uppercase transition-all shadow-sm flex items-center justify-center
-                                ${inputText.trim().length > 0 && !isAnalyzing
-                                    ? 'bg-indigo-600 hover:bg-indigo-500 text-white border border-indigo-400'
-                                    : 'bg-slate-800 text-slate-600 cursor-not-allowed border border-slate-700'
-                                }`}
-                        >
-                            Refine
-                        </button>
+                        <button onClick={(e) => { e.stopPropagation(); onAnalyze(index); }} onMouseDown={(e) => e.stopPropagation()} disabled={!isReady || isAnalyzing} className={`nodrag nopan h-10 px-4 rounded text-[10px] font-bold uppercase transition-all shadow-sm flex items-center justify-center ${isReady && !isAnalyzing ? 'bg-slate-700 hover:bg-slate-600 text-white border border-slate-600' : 'bg-slate-800 text-slate-600 cursor-not-allowed border border-slate-700'}`}>Analyze</button>
+                        <button onClick={handleRefineClick} onMouseDown={(e) => e.stopPropagation()} disabled={!isReady || isAnalyzing || inputText.trim().length === 0} className={`nodrag nopan h-10 px-4 rounded text-[10px] font-bold uppercase transition-all shadow-sm flex items-center justify-center ${inputText.trim().length > 0 && !isAnalyzing ? 'bg-indigo-600 hover:bg-indigo-500 text-white border border-indigo-400' : 'bg-slate-800 text-slate-600 cursor-not-allowed border border-slate-700'}`}>Refine</button>
                      </div>
                 </div>
             </div>
@@ -394,31 +272,28 @@ export const DesignAnalystNode = memo(({ id, data }: NodeProps<PSDNodeData>) => 
   const analystInstances = data.analystInstances || {};
 
   const edges = useEdges();
+  const nodes = useNodes(); // Use nodes to find Source PSD
   const { setNodes } = useReactFlow();
   const updateNodeInternals = useUpdateNodeInternals();
   
-  const { resolvedRegistry, templateRegistry, registerResolved, registerTemplate, unregisterNode, userCredits } = useProceduralStore();
+  const { resolvedRegistry, templateRegistry, registerResolved, registerTemplate, unregisterNode, userCredits, psdRegistry } = useProceduralStore();
 
   useEffect(() => {
     return () => unregisterNode(id);
   }, [id, unregisterNode]);
 
-  // Handle Updates: Notify React Flow of internal layout changes when instances are added/removed
   useEffect(() => {
     updateNodeInternals(id);
   }, [id, instanceCount, updateNodeInternals]);
 
-  // Derived Title: Dynamically resolve connected container names via source inputs
+  // Derived Title
   const activeContainerNames = useMemo(() => {
     const names: string[] = [];
     for (let i = 0; i < instanceCount; i++) {
-        // Find edge connected to source-in-${i}
         const sourceEdge = edges.find(e => e.target === id && e.targetHandle === `source-in-${i}`);
         if (sourceEdge) {
-            // Retrieve MappingContext from Registry
             const registry = resolvedRegistry[sourceEdge.source];
             const context = registry ? registry[sourceEdge.sourceHandle || ''] : null;
-            
             if (context?.container?.containerName) {
                 names.push(context.container.containerName);
             }
@@ -427,11 +302,9 @@ export const DesignAnalystNode = memo(({ id, data }: NodeProps<PSDNodeData>) => 
     return names;
   }, [edges, id, instanceCount, resolvedRegistry]);
     
-  const titleSuffix = activeContainerNames.length > 0 
-    ? `(${activeContainerNames.join(', ')})` 
-    : '(Waiting...)';
+  const titleSuffix = activeContainerNames.length > 0 ? `(${activeContainerNames.join(', ')})` : '(Waiting...)';
 
-  // --- Helpers to resolve connection data per instance ---
+  // --- Helpers ---
   const getSourceData = useCallback((index: number) => {
     const edge = edges.find(e => e.target === id && e.targetHandle === `source-in-${index}`);
     if (!edge || !edge.sourceHandle) return null;
@@ -442,21 +315,55 @@ export const DesignAnalystNode = memo(({ id, data }: NodeProps<PSDNodeData>) => 
   const getTargetData = useCallback((index: number) => {
     const edge = edges.find(e => e.target === id && e.targetHandle === `target-in-${index}`);
     if (!edge) return null;
-    
     const template = templateRegistry[edge.source];
     if (!template) return null;
-
     let containerName = edge.sourceHandle;
     if (containerName?.startsWith('slot-bounds-')) {
         containerName = containerName.replace('slot-bounds-', '');
     }
-
     const container = template.containers.find(c => c.name === containerName);
     return container ? { bounds: container.bounds, name: container.name } : null;
   }, [edges, id, templateRegistry]);
 
+  // --- Pixel Extraction Service ---
+  const extractSourcePixels = async (layers: SerializableLayer[], bounds: {x: number, y: number, w: number, h: number}): Promise<string | null> => {
+      // Find the PSD Node to get the binary data
+      const loadPsdNode = nodes.find(n => n.type === 'loadPsd');
+      if (!loadPsdNode) return null;
+      const psd = psdRegistry[loadPsdNode.id];
+      if (!psd) return null;
+
+      // Create a canvas to composite the layers
+      const canvas = document.createElement('canvas');
+      canvas.width = bounds.w;
+      canvas.height = bounds.h;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return null;
+
+      const drawLayers = (layerNodes: SerializableLayer[]) => {
+          // Iterate in reverse (painter's algorithm: bottom-up)
+          for (let i = layerNodes.length - 1; i >= 0; i--) {
+              const node = layerNodes[i];
+              if (!node.isVisible) continue;
+
+              if (node.children) {
+                  drawLayers(node.children);
+              } else {
+                  const agLayer = findLayerByPath(psd, node.id);
+                  if (agLayer && agLayer.canvas) {
+                      const dx = (agLayer.left || 0) - bounds.x;
+                      const dy = (agLayer.top || 0) - bounds.y;
+                      ctx.drawImage(agLayer.canvas, dx, dy);
+                  }
+              }
+          }
+      };
+
+      drawLayers(layers);
+      return canvas.toDataURL('image/png');
+  };
+
   // --- Store Synchronization Effect ---
-  // Registers source/target relays and injects metadata for EACH instance
   useEffect(() => {
     const syntheticContainers: ContainerDefinition[] = [];
     let canvasDims = { width: 0, height: 0 };
@@ -466,38 +373,23 @@ export const DesignAnalystNode = memo(({ id, data }: NodeProps<PSDNodeData>) => 
         const targetData = getTargetData(i);
         const instanceState = analystInstances[i];
 
-        // 1. Source Relay with Metadata Injection (ResolvedRegistry)
-        // Pass-through layer data to source-out handle but inject the AI Strategy into the context
         if (sourceData) {
-            
-            // Logic: Scan chat history for explicit user intent for generation
-            // This is a logic gate to prevent accidental generation in downstream Remapper
             const history = instanceState?.chatHistory || [];
-            const hasExplicitKeywords = history.some(msg => 
-                msg.role === 'user' && 
-                /\b(generate|recreate|nano banana)\b/i.test(msg.parts[0].text)
-            );
+            const hasExplicitKeywords = history.some(msg => msg.role === 'user' && /\b(generate|recreate|nano banana)\b/i.test(msg.parts[0].text));
             
-            // Clone the context to avoid mutating the original reference from upstream
             const augmentedContext: MappingContext = {
                 ...sourceData,
-                // Inject the strategy if it exists for this instance
                 aiStrategy: instanceState?.layoutStrategy ? {
                     ...instanceState.layoutStrategy,
                     isExplicitIntent: hasExplicitKeywords
                 } : undefined,
-                // Preserve existing previewUrl if present in the registry (handled by performAnalysis update)
-                // However, sourceData comes from upstream resolver, so it won't have the preview.
-                // We rely on performAnalysis to update the registry with the preview.
-                // ENRICHMENT: Pass target dimensions explicitly for downstream UI determinism
+                previewUrl: undefined,
                 targetDimensions: targetData ? { w: targetData.bounds.w, h: targetData.bounds.h } : undefined
             };
             
              registerResolved(id, `source-out-${i}`, augmentedContext);
         }
 
-        // 2. Target Relay (TemplateRegistry Construction)
-        // ... (existing logic)
         if (targetData) {
             if (canvasDims.width === 0) {
                 const edge = edges.find(e => e.target === id && e.targetHandle === `target-in-${i}`);
@@ -506,7 +398,6 @@ export const DesignAnalystNode = memo(({ id, data }: NodeProps<PSDNodeData>) => 
                     if (t) canvasDims = t.canvas;
                 }
             }
-
             syntheticContainers.push({
                 id: `proxy-target-${i}`,
                 name: `target-out-${i}`, 
@@ -522,7 +413,6 @@ export const DesignAnalystNode = memo(({ id, data }: NodeProps<PSDNodeData>) => 
         }
     }
 
-    // Register the aggregated synthetic template if we have data
     if (syntheticContainers.length > 0) {
         const syntheticTemplate: TemplateMetadata = {
             canvas: canvasDims.width > 0 ? canvasDims : { width: 1024, height: 1024 },
@@ -533,19 +423,11 @@ export const DesignAnalystNode = memo(({ id, data }: NodeProps<PSDNodeData>) => 
 
   }, [id, instanceCount, analystInstances, getSourceData, getTargetData, registerResolved, registerTemplate, edges, templateRegistry]);
 
-
   // --- Action Handlers ---
-
   const addInstance = useCallback(() => {
     setNodes((nds) => nds.map((n) => {
         if (n.id === id) {
-            return {
-                ...n,
-                data: {
-                    ...n.data,
-                    instanceCount: (n.data.instanceCount || 0) + 1
-                }
-            };
+            return { ...n, data: { ...n.data, instanceCount: (n.data.instanceCount || 0) + 1 } };
         }
         return n;
     }));
@@ -555,12 +437,7 @@ export const DesignAnalystNode = memo(({ id, data }: NodeProps<PSDNodeData>) => 
     setNodes((nds) => nds.map((n) => {
         if (n.id === id) {
             const currentInstances = n.data.analystInstances || {};
-            const oldState = currentInstances[index] || {
-                chatHistory: [],
-                layoutStrategy: null,
-                selectedModel: 'gemini-3-flash'
-            };
-            
+            const oldState = currentInstances[index] || { chatHistory: [], layoutStrategy: null, selectedModel: 'gemini-3-flash' };
             return {
                 ...n,
                 data: {
@@ -581,27 +458,18 @@ export const DesignAnalystNode = memo(({ id, data }: NodeProps<PSDNodeData>) => 
   };
 
   // --- AI Logic ---
-  
-  // DRAFT GENERATION HELPER
   const generateDraft = async (prompt: string): Promise<string | null> => {
      try {
          const apiKey = process.env.API_KEY;
          if (!apiKey) return null;
-         
          const ai = new GoogleGenAI({ apiKey });
-         // Async Constraint: Low-resolution request
          const response = await ai.models.generateContent({
              model: 'gemini-2.5-flash-image',
              contents: { parts: [{ text: `Generate a quick low-resolution draft sketch (256x256) for: ${prompt}` }] },
-             config: {
-                 imageConfig: { aspectRatio: "1:1" } // Default square for draft
-             }
+             config: { imageConfig: { aspectRatio: "1:1" } }
          });
-         
          for (const part of response.candidates?.[0]?.content?.parts || []) {
-            if (part.inlineData) {
-                return `data:image/png;base64,${part.inlineData.data}`;
-            }
+            if (part.inlineData) { return `data:image/png;base64,${part.inlineData.data}`; }
          }
          return null;
      } catch (e) {
@@ -616,7 +484,6 @@ export const DesignAnalystNode = memo(({ id, data }: NodeProps<PSDNodeData>) => 
     const targetW = targetData.bounds.w;
     const targetH = targetData.bounds.h;
 
-    // Flatten layers for context
     const flattenLayers = (layers: SerializableLayer[], depth = 0): any[] => {
         let flat: any[] = [];
         layers.forEach(l => {
@@ -630,9 +497,7 @@ export const DesignAnalystNode = memo(({ id, data }: NodeProps<PSDNodeData>) => 
                 width: l.coords.w,
                 height: l.coords.h
             });
-            if (l.children) {
-                flat = flat.concat(flattenLayers(l.children, depth + 1));
-            }
+            if (l.children) { flat = flat.concat(flattenLayers(l.children, depth + 1)); }
         });
         return flat;
     };
@@ -660,7 +525,9 @@ export const DesignAnalystNode = memo(({ id, data }: NodeProps<PSDNodeData>) => 
 
         DECISION MATRIX (Strict Enforcement):
         - METHOD 'GEOMETRIC': Default. Use purely geometric transforms (scale/translate). 'generativePrompt' MUST be empty string "".
-        - METHOD 'GENERATIVE': Use ONLY if user explicitly requests (e.g., "generate", "create", "nano banana") OR if aspect ratio mismatch is > 2.0 (mathematically impossible to fit without distortion).
+        - METHOD 'GENERATIVE': Use ONLY if user explicitly requests (e.g., "generate", "create", "nano banana") OR if aspect ratio mismatch is > 2.0.
+          IF GENERATIVE IS SELECTED:
+          - Set 'generativePrompt' to: "Generate a high-fidelity expansion. Use the attached sourceReference for style, lighting, and texture matching. Do not deviate from the original aesthetic."
         - METHOD 'HYBRID': Use geometric layout for main elements but generate background fill.
         
         CREDIT AWARENESS:
@@ -678,13 +545,12 @@ export const DesignAnalystNode = memo(({ id, data }: NodeProps<PSDNodeData>) => 
         If standard scaling fails (leaves gaps > 10% or cuts content) AND you provide a 'generativePrompt':
         1. Set 'method' to 'HYBRID' or 'GENERATIVE'.
         2. Prefix 'reasoning' with "[FALLBACK_REQUIRED]".
-        3. Provide the specific 'generativePrompt' to fill the missing areas.
+        3. Provide the specific 'generativePrompt'.
     `;
     
     if (isRefining) {
         prompt += `\n\nUSER FEEDBACK RECEIVED. Adjust the 'overrides' array to satisfy the user request while maintaining valid JSON structure and boundary safety.`;
     }
-
     return prompt;
   };
 
@@ -704,9 +570,7 @@ export const DesignAnalystNode = memo(({ id, data }: NodeProps<PSDNodeData>) => 
         if (!apiKey) throw new Error("API_KEY missing");
 
         const ai = new GoogleGenAI({ apiKey });
-        // Pass userCredits to system instruction
         const systemInstruction = generateSystemInstruction(sourceData, targetData, history.length > 1, userCredits);
-
         const contents = history.map(msg => ({ role: msg.role, parts: msg.parts }));
 
         const requestConfig: any = {
@@ -759,6 +623,18 @@ export const DesignAnalystNode = memo(({ id, data }: NodeProps<PSDNodeData>) => 
 
         const json = JSON.parse(response.text || '{}');
         
+        // --- PAYLOAD ENRICHMENT: Source Pixel Extraction ---
+        // If method is GENERATIVE, we must attach the source reference pixels
+        if (json.method === 'GENERATIVE' || json.method === 'HYBRID') {
+             const pixelData = await extractSourcePixels(
+                 sourceData.layers as SerializableLayer[],
+                 sourceData.container.bounds
+             );
+             if (pixelData) {
+                 json.sourceReference = pixelData; // Attach base64 to strategy
+             }
+        }
+
         const newAiMessage: ChatMessage = {
             id: Date.now().toString(),
             role: 'model',
@@ -769,42 +645,32 @@ export const DesignAnalystNode = memo(({ id, data }: NodeProps<PSDNodeData>) => 
 
         const finalHistory = [...history, newAiMessage];
         
-        // Update Component State IMMEDIATELY
         updateInstanceState(index, {
             chatHistory: finalHistory,
             layoutStrategy: json
         });
 
-        // Determine Intent
         const isExplicitIntent = history.some(msg => msg.role === 'user' && /\b(generate|recreate|nano banana)\b/i.test(msg.parts[0].text));
 
-        // Store Sync: Push Strategy IMMEDIATELY (No Preview yet)
         const augmentedContext: MappingContext = {
             ...sourceData,
             aiStrategy: {
                 ...json,
                 isExplicitIntent
             },
-            previewUrl: undefined, // Clear old preview if any on new analysis
-            // ENRICHMENT: Pass target dimensions explicitly
+            previewUrl: undefined,
             targetDimensions: targetData ? { w: targetData.bounds.w, h: targetData.bounds.h } : undefined
         };
         
         registerResolved(id, `source-out-${index}`, augmentedContext);
 
-        // Async Draft Synthesis
-        // CONSTRAINT: Only trigger if method is GENERATIVE (or explicitly requested)
         if (json.method === 'GENERATIVE' && json.generativePrompt) {
-             // Do not await - let this run in background to update UI later
              generateDraft(json.generativePrompt).then((url) => {
                  if (url) {
                      console.log("PREVIEW_GENERATED: 0 Credits Consumed");
-                     
-                     // Update Store with Preview
                      const contextWithPreview: MappingContext = {
                          ...augmentedContext,
                          previewUrl: url,
-                         // Mark as free preview explicitly in metadata if needed via message
                          message: "Free Preview: Draft"
                      };
                      registerResolved(id, `source-out-${index}`, contextWithPreview);
@@ -814,7 +680,6 @@ export const DesignAnalystNode = memo(({ id, data }: NodeProps<PSDNodeData>) => 
 
       } catch (e: any) {
           console.error("Analysis Failed:", e);
-          // Optional: Add error message to chat
       } finally {
           setAnalyzingInstances(prev => ({ ...prev, [index]: false }));
       }
@@ -827,7 +692,6 @@ export const DesignAnalystNode = memo(({ id, data }: NodeProps<PSDNodeData>) => 
           parts: [{ text: "Generate grid layout." }],
           timestamp: Date.now()
       };
-      
       updateInstanceState(index, { chatHistory: [initialMsg] });
       performAnalysis(index, [initialMsg]);
   };
@@ -840,7 +704,6 @@ export const DesignAnalystNode = memo(({ id, data }: NodeProps<PSDNodeData>) => 
           parts: [{ text }],
           timestamp: Date.now()
       };
-      
       const updatedHistory = [...currentHistory, userMsg];
       updateInstanceState(index, { chatHistory: updatedHistory });
       performAnalysis(index, updatedHistory);
@@ -848,15 +711,7 @@ export const DesignAnalystNode = memo(({ id, data }: NodeProps<PSDNodeData>) => 
 
   return (
     <div className="w-full min-w-[320px] bg-slate-800 rounded-lg shadow-2xl border border-slate-600 font-sans flex flex-col transition-colors duration-300">
-      <NodeResizer 
-          minWidth={550} 
-          minHeight={500} 
-          isVisible={true} 
-          handleStyle={{ background: 'transparent', border: 'none' }}
-          lineStyle={{ border: 'none' }}
-      />
-
-      {/* Main Header */}
+      <NodeResizer minWidth={550} minHeight={500} isVisible={true} handleStyle={{ background: 'transparent', border: 'none' }} lineStyle={{ border: 'none' }} />
       <div className="bg-slate-900 p-2 border-b border-slate-700 flex items-center justify-between shrink-0 rounded-t-lg">
          <div className="flex items-center space-x-2">
            <svg className="w-4 h-4 text-purple-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -868,45 +723,22 @@ export const DesignAnalystNode = memo(({ id, data }: NodeProps<PSDNodeData>) => 
            </div>
          </div>
       </div>
-
-      {/* Instances Container */}
       <div className="flex flex-col">
           {Array.from({ length: instanceCount }).map((_, i) => {
-              const state = analystInstances[i] || { 
-                  chatHistory: [], 
-                  layoutStrategy: null, 
-                  selectedModel: 'gemini-3-flash' 
-              };
-              
+              const state = analystInstances[i] || { chatHistory: [], layoutStrategy: null, selectedModel: 'gemini-3-flash' };
               return (
                   <InstanceRow 
-                      key={i}
-                      nodeId={id}
-                      index={i}
-                      state={state}
-                      sourceData={getSourceData(i)}
-                      targetData={getTargetData(i)}
-                      onAnalyze={handleAnalyze}
-                      onRefine={handleRefine}
-                      onModelChange={handleModelChange}
-                      isAnalyzing={!!analyzingInstances[i]}
-                      compactMode={instanceCount > 1}
+                      key={i} nodeId={id} index={i} state={state} sourceData={getSourceData(i)} targetData={getTargetData(i)}
+                      onAnalyze={handleAnalyze} onRefine={handleRefine} onModelChange={handleModelChange}
+                      isAnalyzing={!!analyzingInstances[i]} compactMode={instanceCount > 1}
                   />
               );
           })}
       </div>
-
-      {/* Footer Action */}
-      <button 
-        onClick={addInstance}
-        className="w-full py-2 bg-slate-800 hover:bg-slate-700 border-t border-slate-700 text-slate-400 hover:text-slate-200 transition-colors flex items-center justify-center space-x-1 rounded-b-lg"
-      >
-        <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-        </svg>
+      <button onClick={addInstance} className="w-full py-2 bg-slate-800 hover:bg-slate-700 border-t border-slate-700 text-slate-400 hover:text-slate-200 transition-colors flex items-center justify-center space-x-1 rounded-b-lg">
+        <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" /></svg>
         <span className="text-[10px] font-medium uppercase tracking-wider">Add Analysis Instance</span>
       </button>
-
     </div>
   );
 });

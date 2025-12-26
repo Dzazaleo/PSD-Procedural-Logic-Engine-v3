@@ -24,18 +24,46 @@ const getClosestAspectRatio = (width: number, height: number): string => {
 };
 
 // Helper: Generate Image using GenAI SDK and convert to Canvas
-// UPDATE: Added Aspect Ratio Reconciliation (Smart Crop)
-const generateLayerImage = async (prompt: string, width: number, height: number): Promise<HTMLCanvasElement | null> => {
+// UPDATE: Added Multi-Modal Support (Text + Image) for Reference-Based Generation
+const generateLayerImage = async (
+    prompt: string, 
+    width: number, 
+    height: number, 
+    sourceReference?: string
+): Promise<HTMLCanvasElement | null> => {
     try {
         const apiKey = process.env.API_KEY;
         if (!apiKey) throw new Error("API Key missing");
 
         const ai = new GoogleGenAI({ apiKey });
         
+        // Construct Multi-Modal Request Parts
+        const parts: any[] = [];
+        
+        // 1. Inject Source Pixels if available (Visual Grounding)
+        if (sourceReference) {
+            // Strip data URI header if present to get raw base64
+            const base64Data = sourceReference.includes('base64,') 
+                ? sourceReference.split('base64,')[1] 
+                : sourceReference;
+            
+            parts.push({
+                inlineData: {
+                    mimeType: 'image/png',
+                    data: base64Data
+                }
+            });
+        }
+        
+        // 2. Inject Text Prompt
+        parts.push({ text: prompt });
+
         // Use gemini-2.5-flash-image for general image generation tasks
+        // Note: styleStrength is not currently exposed in the official SDK config type for flash-image,
+        // relying on prompt engineering ("high fidelity", "match style") and image input for adherence.
         const response = await ai.models.generateContent({
             model: 'gemini-2.5-flash-image',
-            contents: { parts: [{ text: prompt }] },
+            contents: { parts },
             config: {
                 imageConfig: {
                     aspectRatio: getClosestAspectRatio(width, height) as any
@@ -224,7 +252,8 @@ export const ExportPSDNode = memo(({ id }: NodeProps) => {
                               const canvas = await generateLayerImage(
                                   layer.generativePrompt!, 
                                   layer.coords.w, 
-                                  layer.coords.h
+                                  layer.coords.h,
+                                  payload.sourceReference // Pass visual grounding from Analyst
                               );
                               if (canvas) {
                                   generatedAssets.set(layer.id, canvas);

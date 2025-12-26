@@ -81,6 +81,8 @@ export interface LayoutStrategy {
   // Logic Gate Flags
   isExplicitIntent?: boolean;
   clearance?: boolean;
+  // Visual Grounding
+  sourceReference?: string; // Base64 pixel data of the source container
 }
 
 export interface TransformedLayer extends SerializableLayer {
@@ -145,6 +147,7 @@ export interface TransformedPayload {
   requiresGeneration?: boolean;
   previewUrl?: string;
   isConfirmed?: boolean;
+  sourceReference?: string; // Carried over from Strategy for Export/Gen use
 }
 
 export interface RemapperConfig {

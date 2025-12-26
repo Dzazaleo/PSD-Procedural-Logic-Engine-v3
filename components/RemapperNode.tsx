@@ -36,6 +36,7 @@ interface OverlayProps {
     canConfirm: boolean;
     isConfirmed: boolean;
     targetDimensions?: { w: number, h: number };
+    sourceReference?: string;
 }
 
 const GenerativePreviewOverlay = ({ 
@@ -46,7 +47,8 @@ const GenerativePreviewOverlay = ({
     userCredits,
     canConfirm,
     isConfirmed,
-    targetDimensions
+    targetDimensions,
+    sourceReference
 }: OverlayProps) => {
     // Dynamic Ratio Calculation
     const { w, h } = targetDimensions || { w: 1, h: 1 };
@@ -70,6 +72,21 @@ const GenerativePreviewOverlay = ({
                     width: '100%'
                 }}
              >
+                 {/* Visual Grounding: Source Reference Thumbnail */}
+                 {sourceReference && (
+                     <div className="absolute top-2 right-2 z-20 flex flex-col items-end group/source pointer-events-none">
+                        <div className="bg-black/60 backdrop-blur-md border border-white/20 p-0.5 rounded shadow-xl transition-transform transform group-hover/source:scale-150 origin-top-right">
+                             <img 
+                                src={sourceReference} 
+                                alt="Style Source" 
+                                className="w-8 h-8 object-cover rounded-[1px] border border-white/10" 
+                             />
+                        </div>
+                        <span className="text-[7px] text-white/50 font-mono mt-1 bg-black/60 px-1 rounded border border-white/5 uppercase tracking-wider">
+                            Style Source
+                        </span>
+                     </div>
+                 )}
                  
                  {/* 1. The Ghost Image */}
                  {previewUrl ? (
@@ -454,7 +471,9 @@ export const RemapperNode = memo(({ id, data }: NodeProps<PSDNodeData>) => {
               // Attach any generated preview URL for persistence/usage
               // PRIORITIZE UPSTREAM PREVIEW if available
               previewUrl: sourceData.previewUrl || previews[i],
-              isConfirmed: isConfirmed
+              isConfirmed: isConfirmed,
+              // VISUAL GROUNDING: Pass source pixel buffer if available
+              sourceReference: sourceData.aiStrategy?.sourceReference
             };
         }
 
@@ -526,6 +545,7 @@ export const RemapperNode = memo(({ id, data }: NodeProps<PSDNodeData>) => {
         // Only generate if we haven't already and aren't currently generating AND no upstream preview
         if (isAwaiting && hasPrompt && !existingPreview && !isGeneratingPreview[instance.index]) {
              const prompt = instance.source.aiStrategy!.generativePrompt;
+             const sourceRef = instance.source.aiStrategy?.sourceReference;
              
              const generateDraft = async () => {
                  setIsGeneratingPreview(prev => ({...prev, [instance.index]: true}));
@@ -535,10 +555,27 @@ export const RemapperNode = memo(({ id, data }: NodeProps<PSDNodeData>) => {
                      if (!apiKey) return;
                      
                      const ai = new GoogleGenAI({ apiKey });
+                     
+                     // Construct parts
+                     const parts: any[] = [];
+                     if (sourceRef) {
+                         const base64Data = sourceRef.includes('base64,') 
+                            ? sourceRef.split('base64,')[1] 
+                            : sourceRef;
+                            
+                         parts.push({
+                            inlineData: {
+                                mimeType: 'image/png',
+                                data: base64Data
+                            }
+                         });
+                     }
+                     parts.push({ text: prompt });
+
                      // Use gemini-2.5-flash-image for fast drafts
                      const response = await ai.models.generateContent({
                         model: 'gemini-2.5-flash-image',
-                        contents: { parts: [{ text: prompt }] },
+                        contents: { parts },
                         config: {
                              imageConfig: {
                                 // Request square aspect ratio for preview box usually
@@ -727,6 +764,7 @@ export const RemapperNode = memo(({ id, data }: NodeProps<PSDNodeData>) => {
                                        isConfirmed={isConfirmed}
                                        // PRIORITIZE SOURCE-PROVIDED DIMENSIONS
                                        targetDimensions={instance.source.targetDimensions || instance.target.bounds}
+                                       sourceReference={instance.payload.sourceReference}
                                    />
                                </div>
                            )}
